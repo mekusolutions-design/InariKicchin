@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-bg text-ink;
+  }
+
+  body {
+    @apply antialiased;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  ::selection {
+    @apply bg-primary-100 text-primary-900;
+  }
+
+  /* Numeric alignment for tables/KPIs — pairs with the `tabular-nums` utility used throughout. */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Content well with comfortable vertical rhythm for operational screens */
+  .ops-page {
+    @apply flex flex-col gap-6;
+  }
+
+  /* Soft section divider for dense operational layouts */
+  .ops-section {
+    @apply rounded-lg border border-border bg-surface shadow-card;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(214 16% 78%) transparent;
+  }
+}

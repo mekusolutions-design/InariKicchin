@@ -1,0 +1,25 @@
+{
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://YOUR-INARI-API-HOST.example.com",
+        "EXPO_PUBLIC_POS_API_URL": "https://YOUR-INARI-POS-API-HOST.example.com",
+        "EXPO_PUBLIC_USE_GO_POS": "true"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://YOUR-INARI-API-HOST.example.com",
+        "EXPO_PUBLIC_POS_API_URL": "https://YOUR-INARI-POS-API-HOST.example.com",
+        "EXPO_PUBLIC_USE_GO_POS": "true"
+      }
+    }
+  }
+}
