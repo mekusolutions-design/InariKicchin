@@ -11,6 +11,7 @@ import { IdempotencyService } from '../../core/idempotency.service';
 import { MenuGateway } from './menu.gateway';
 import type { CreateMenuDto } from './dto/create-menu.dto';
 import type { MenuItemDto } from './dto/menu-item.dto';
+import { FefoStockService } from '../../core/fefo-stock.service';
 
 interface IdempotencyResult {
   isReplay: boolean;
@@ -188,10 +189,17 @@ function normalizeLines(dto: CreateMenuDto): NormalizedLine[] {
       const maxSelect =
         line.max_select ?? (type === 'CHOICE' ? 1 : isChoice ? qty : 1);
 
+      // FIXED + INVENTORY both persist the SKU on finished_good_id.
+      // Accept inventory_item_id as an alias so POS/catalog pickers stay consistent.
+      const resolvedFgId =
+        (typeof fgId === 'string' && fgId.trim()) ||
+        (typeof line.finished_good_id === 'string' && line.finished_good_id.trim()) ||
+        undefined;
+
       return {
         component_key: line.component_key?.trim() || `line_${idx + 1}`,
         component_type: type,
-        finished_good_id: line.finished_good_id?.trim(),
+        finished_good_id: resolvedFgId,
         finished_good_name: line.finished_good_name,
         finished_good_category_id: line.finished_good_category_id?.trim(),
         finished_good_category_code: line.finished_good_category_code?.trim(),
@@ -235,7 +243,7 @@ export class MenuService {
     string,
     { at: number; data: { success: boolean; items: MenuListItem[]; count: number } }
   >();
-  private static readonly LIST_MENUS_TTL_MS = 120_000;
+  private static readonly LIST_MENUS_TTL_MS = 30_000;
 
   invalidateListMenusCache(shopId?: string): void {
     if (shopId) this.listMenusCache.delete(shopId);
@@ -247,13 +255,21 @@ export class MenuService {
     const cached = this.listMenusCache.get(shopId);
     if (!cached) return;
 
+    // Prefer usable-batch sum so menu maxPortions matches Inventory Available
+    const batchMap = await this.fefoStock.getUsableStockByItemMap(shopId);
+    const avail = new Map<string, number>(
+      [...batchMap.entries()].map(([id, v]) => [id, v.qty]),
+    );
+    // Fill gaps from projection only when no batch rows exist (legacy)
     const rows = await this.prisma.inventoryProjection.findMany({
       where: { shop_id: shopId },
       select: { item_id: true, available_stock: true },
     });
-    const avail = new Map(
-      rows.map((r) => [r.item_id, Number(r.available_stock ?? 0)]),
-    );
+    for (const r of rows) {
+      if (!avail.has(r.item_id)) {
+        avail.set(r.item_id, Math.max(0, Number(r.available_stock ?? 0)));
+      }
+    }
 
     for (const item of cached.data.items) {
       const lines = item.lines ?? [];
@@ -267,7 +283,11 @@ export class MenuService {
       }
       let minP = Infinity;
       for (const line of lines) {
-        if (line.componentType === 'FIXED' && line.finishedGoodId) {
+        if (
+          (line.componentType === 'FIXED' ||
+            line.componentType === 'INVENTORY') &&
+          line.finishedGoodId
+        ) {
           const a = avail.get(line.finishedGoodId) ?? 0;
           const need = Math.max(line.quantityRequired || 1, 0.0001);
           const mp = Math.max(0, Math.floor(a / need));
@@ -292,8 +312,9 @@ export class MenuService {
       }
       if (minP !== Infinity) {
         item.maxPortions = Math.max(0, minP);
+        // Portions, not raw stock — keep POS bootstrap / chips consistent
         item.availableQuantity = item.maxPortions;
-        item.isAvailable = item.maxPortions > 0;
+        item.isAvailable = item.maxPortions > 0 && item.isAvailable !== false;
       }
     }
     this.listMenusCache.set(shopId, { at: Date.now(), data: cached.data });
@@ -304,6 +325,7 @@ export class MenuService {
     private readonly idempotencyService: IdempotencyService,
     private readonly menuGateway: MenuGateway,
     private readonly prisma: PrismaService,
+    private readonly fefoStock: FefoStockService,
   ) {}
 
   // ── Finished goods (FIXED picker only) ─────────────────
@@ -493,7 +515,10 @@ export class MenuService {
       cached &&
       Date.now() - cached.at < MenuService.LIST_MENUS_TTL_MS
     ) {
-      return cached.data;
+      // Structure is cached; stock for FIXED/INVENTORY must stay live so POS
+      // "N left" matches Inventory after receives/waste/closing stock.
+      await this.refreshListMenusStock(shopId);
+      return this.listMenusCache.get(shopId)?.data ?? cached.data;
     }
 
     const events = await this.prisma.event.findMany({
@@ -650,8 +675,10 @@ export class MenuService {
           event.created_at.toISOString() ||
           existing.createdAt;
 
+        // Non-empty lines only — empty array must NOT wipe prior FIXED/CHOICE
+        // components (otherwise maxPortions collapses to 0 and POS disables the item).
         const payloadLines = Array.isArray(payload.lines) ? payload.lines : null;
-        if (payloadLines) {
+        if (payloadLines && payloadLines.length > 0) {
           const map = new Map<string, LineDraft>();
           payloadLines.forEach((raw, idx) => {
             const row = asRecord(raw);
@@ -665,8 +692,20 @@ export class MenuService {
 
     }
 
-    // Preload all shop stock once (avoids N+1 inventoryProjection queries)
+    // Preload usable-batch stock once (aligned with Inventory Available / FEFO)
     const stockCache = new Map<string, StockSnapshot>();
+    const batchMap = await this.fefoStock.getUsableStockByItemMap(shopId);
+    for (const [itemId, v] of batchMap) {
+      const available = Math.max(0, v.qty);
+      const value = Math.max(0, v.value);
+      const unitCost =
+        available > 0 && value > 0 ? value / available : 0;
+      stockCache.set(itemId, {
+        available,
+        unitCost: Number.isFinite(unitCost) ? unitCost : 0,
+      });
+    }
+    // Legacy projection-only items (no batches yet)
     const allStock = await this.prisma.inventoryProjection.findMany({
       where: { shop_id: shopId },
       select: {
@@ -676,8 +715,9 @@ export class MenuService {
       },
     });
     for (const row of allStock) {
-      const available = Number(row.available_stock ?? 0);
-      const value = Number(row.total_value ?? 0);
+      if (stockCache.has(row.item_id)) continue;
+      const available = Math.max(0, Number(row.available_stock ?? 0));
+      const value = Math.max(0, Number(row.total_value ?? 0));
       const unitCost =
         available > 0 && value > 0 ? value / available : 0;
       stockCache.set(row.item_id, {
@@ -728,7 +768,31 @@ export class MenuService {
       for (const draft of lineDrafts) {
         if (draft.componentType === 'FIXED' || draft.componentType === 'INVENTORY') {
           const finishedGoodId = draft.finishedGoodId;
-          if (!finishedGoodId) continue;
+          if (!finishedGoodId) {
+            // Unlinked FIXED line must not leave minPortions at Infinity
+            minPortions = 0;
+            requiresSelection = false;
+            lines.push({
+              componentKey: draft.componentKey,
+              componentType: draft.componentType === 'INVENTORY' ? 'INVENTORY' : 'FIXED',
+              finishedGoodId: null,
+              finishedGoodName: draft.finishedGoodName,
+              finishedGoodCategoryId: null,
+              finishedGoodCategoryCode: null,
+              finishedGoodCategoryName: null,
+              options: [],
+              quantityRequired: draft.quantityRequired || 1,
+              unit: draft.unit || 'pcs',
+              availableStock: 0,
+              maxPortions: 0,
+              unitCost: 0,
+              lineCost: 0,
+              minSelect: 0,
+              maxSelect: 1,
+              allowRepeat: false,
+            } as MenuComponentLine);
+            continue;
+          }
 
           const snapshot = await getStock(finishedGoodId);
           const need = Math.max(draft.quantityRequired || 1, 0.0001);
@@ -826,16 +890,23 @@ export class MenuService {
       (item as MenuListItem & { costMissing: boolean }).costMissing =
         lines.length > 0 && (foodCost <= 0 || anyLineNeedsCost);
 
-      const firstFixed = lines.find((line) => line.componentType === 'FIXED');
-      if (firstFixed) {
-        item.finishedGoodId = firstFixed.finishedGoodId;
-        item.finishedGoodName = firstFixed.finishedGoodName;
-        item.quantityRequired = firstFixed.quantityRequired;
-        item.unit = firstFixed.unit;
-        item.availableQuantity = firstFixed.availableStock;
-      } else {
-        item.availableQuantity = item.maxPortions;
+      // Prefer first FIXED line for display FG metadata; fall back to INVENTORY.
+      const firstStocked = lines.find(
+        (line) =>
+          (line.componentType === 'FIXED' || line.componentType === 'INVENTORY') &&
+          line.finishedGoodId,
+      );
+      if (firstStocked) {
+        item.finishedGoodId = firstStocked.finishedGoodId;
+        item.finishedGoodName = firstStocked.finishedGoodName;
+        item.quantityRequired = firstStocked.quantityRequired;
+        item.unit = firstStocked.unit;
       }
+      // availableQuantity must be sellable *portions* (same unit as maxPortions),
+      // not raw inventory units — POS chips/overlays treat them interchangeably.
+      item.availableQuantity = item.maxPortions;
+      item.isAvailable =
+        item.maxPortions > 0 && item.isAvailable !== false;
     }
 
     items.sort((a, b) => a.name.localeCompare(b.name));
@@ -1074,7 +1145,14 @@ export class MenuService {
       throw new BadRequestException('selling_price must be 0 or more');
     }
 
+    // Empty lines[] means "do not change components" — never emit a wiping adjust.
+    // Clients that omit lines keep prior components; explicit non-empty lists replace.
     let enriched: NormalizedLine[] | null = null;
+    if (dto.lines && dto.lines.length === 0) {
+      this.logger.warn(
+        `menu adjust ${menuId}: empty lines[] ignored; keeping existing components`,
+      );
+    }
     if (dto.lines && dto.lines.length > 0) {
       const asDto = {
         name,
@@ -1356,11 +1434,22 @@ export class MenuService {
       }
     }
 
+    // FIXED / INVENTORY stock key — accept historical aliases so listMenus
+    // can resolve availability after catalog/picker field renames.
+    const finishedGoodId =
+      asString(
+        row.finished_good_id ??
+          row.finishedGoodId ??
+          row.inventory_item_id ??
+          row.inventoryItemId ??
+          row.stock_item_id ??
+          row.stockItemId,
+      ) || null;
+
     return {
       componentKey: key,
       componentType: type,
-      finishedGoodId:
-        asString(row.finished_good_id ?? row.finishedGoodId) || null,
+      finishedGoodId,
       finishedGoodName:
         asString(row.finished_good_name ?? row.finishedGoodName) || null,
       finishedGoodCategoryId:
