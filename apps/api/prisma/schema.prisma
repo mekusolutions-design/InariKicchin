@@ -41,6 +41,10 @@ model User {
   adjustments_created     StockAdjustment[]       @relation("AdjustmentCreator")
   adjustments_approved    StockAdjustment[]       @relation("AdjustmentApprover")
   wastage_recorded        WastageRecord[]
+  sessions                AuthSession[]
+  orders                  RestaurantOrder[]
+  kitchen_transitions     KitchenTicketTransition[]
+  stock_movements         StockMovement[]
 }
 
 model AuditLog {
@@ -86,6 +90,7 @@ model Unit {
   products           Product[]
   makeline_products  MakelineProduct[]
   purchase_items     PurchaseItem[]
+  recipe_lines       RecipeLine[]
 }
 
 model ProductCategory {
@@ -114,6 +119,8 @@ model Product {
   stock_adjustments StockAdjustment[]
   wastage_records   WastageRecord[]
   closing_items     StockClosingItem[]
+  stock_movements   StockMovement[]
+  recipe_inputs     RecipeLine[] @relation("RecipeProductInput")
 }
 
 model Supplier {
@@ -239,6 +246,9 @@ model MakelineProduct {
   adjustments   StockAdjustment[]
   wastage       WastageRecord[]
   closing_items StockClosingItem[]
+  stock_movements StockMovement[]
+  recipe_outputs RecipeLine[] @relation("RecipeMakelineOutput")
+  recipe_inputs  RecipeLine[] @relation("RecipeMakelineInput")
 }
 
 model MakelineProduction {
@@ -345,6 +355,8 @@ model MenuItem {
 
   category      MenuCategory          @relation(fields: [category_id], references: [id])
   price_history MenuItemPriceHistory[]
+  orders        RestaurantOrderLine[]
+  recipe_outputs RecipeLine[] @relation("RecipeMenuOutput")
 }
 
 model MenuItemPriceHistory {
@@ -390,11 +402,218 @@ model PaymentMethod {
 
 /// Empty now; used Phase 4 for recipe-based deduction
 model RecipeLine {
-  id                    String  @id @default(uuid())
+  id                    String   @id @default(uuid())
   output_menu_item_id   String?
   output_makeline_id    String?
   input_product_id      String?
   input_makeline_id     String?
-  quantity              Decimal @db.Decimal(14, 4)
+  quantity              Decimal  @db.Decimal(14, 4)
   unit_id               String?
+
+  output_menu_item MenuItem?       @relation("RecipeMenuOutput", fields: [output_menu_item_id], references: [id])
+  output_makeline  MakelineProduct? @relation("RecipeMakelineOutput", fields: [output_makeline_id], references: [id])
+  input_product    Product?        @relation("RecipeProductInput", fields: [input_product_id], references: [id])
+  input_makeline   MakelineProduct? @relation("RecipeMakelineInput", fields: [input_makeline_id], references: [id])
+  unit             Unit?           @relation(fields: [unit_id], references: [id])
+
+  @@index([output_menu_item_id])
+  @@index([output_makeline_id])
+  @@index([input_product_id])
+  @@index([input_makeline_id])
+}
+
+
+// ─── Durable POS, payments, kitchen, sessions and stock ledger ─────────────
+
+enum RestaurantOrderStatus {
+  NEW
+  PREPARING
+  READY
+  SERVED
+  COLLECTED
+  CANCELLED
+}
+
+enum RestaurantPaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  REFUNDED
+}
+
+enum PaymentRecordStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum StockMovementType {
+  PURCHASE_RECEIPT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  WASTAGE
+  MAKELINE_PRODUCTION_IN
+  RECIPE_DEDUCTION
+  ORDER_VOID_REVERSAL
+  SUPPLIER_RETURN
+  OPENING_BALANCE
+}
+
+model RestaurantOrder {
+  id               String                  @id @default(uuid())
+  order_no         String                  @unique
+  order_type       String
+  status           RestaurantOrderStatus  @default(NEW)
+  payment_status   RestaurantPaymentStatus @default(UNPAID)
+  subtotal         Decimal                 @db.Decimal(14, 2)
+  vat_total        Decimal                 @db.Decimal(14, 2)
+  grand_total      Decimal                 @db.Decimal(14, 2)
+  vat_mode         String
+  vat_rate         Decimal                 @db.Decimal(6, 3)
+  cashier_id       String
+  table_no         String?
+  delivery_ref     String?
+  idempotency_key  String                  @unique
+  void_reason      String?
+  created_at       DateTime                @default(now())
+  updated_at       DateTime                @updatedAt
+  voided_at        DateTime?
+
+  cashier          User                    @relation(fields: [cashier_id], references: [id])
+  lines            RestaurantOrderLine[]
+  payments         PaymentRecord[]
+  kitchen_tickets  KitchenTicket[]
+  idempotency      IdempotencyRecord?
+
+  @@index([created_at])
+  @@index([status, created_at])
+  @@index([payment_status, created_at])
+}
+
+model RestaurantOrderLine {
+  id               String   @id @default(uuid())
+  order_id         String
+  menu_item_id     String?
+  name_snapshot    String
+  quantity         Decimal  @db.Decimal(14, 4)
+  unit_price       Decimal  @db.Decimal(14, 2)
+  line_total       Decimal  @db.Decimal(14, 2)
+  vat_amount       Decimal  @db.Decimal(14, 2)
+  vat_class        String
+  notes            String?
+
+  order      RestaurantOrder @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  menu_item  MenuItem?        @relation(fields: [menu_item_id], references: [id], onDelete: SetNull)
+
+  @@index([order_id])
+  @@index([menu_item_id])
+}
+
+model PaymentRecord {
+  id             String              @id @default(uuid())
+  order_id       String
+  method_name    String
+  amount         Decimal             @db.Decimal(14, 2)
+  reference      String?
+  status         PaymentRecordStatus @default(CONFIRMED)
+  recorded_at    DateTime            @default(now())
+  confirmed_at   DateTime?
+  metadata       Json?
+
+  order RestaurantOrder @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@index([order_id, recorded_at])
+  @@index([method_name, reference])
+}
+
+model KitchenTicket {
+  id            String                 @id @default(uuid())
+  order_id      String
+  ticket_no     String                 @unique
+  status        RestaurantOrderStatus @default(NEW)
+  print_count   Int                    @default(0)
+  created_at    DateTime               @default(now())
+  preparing_at  DateTime?
+  ready_at      DateTime?
+  served_at     DateTime?
+  transitions   KitchenTicketTransition[]
+
+  order RestaurantOrder @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@index([status, created_at])
+  @@index([order_id])
+}
+
+model KitchenTicketTransition {
+  id          String                 @id @default(uuid())
+  ticket_id   String
+  from_status RestaurantOrderStatus?
+  to_status   RestaurantOrderStatus
+  changed_by  String?
+  reason      String?
+  created_at  DateTime               @default(now())
+
+  ticket KitchenTicket @relation(fields: [ticket_id], references: [id], onDelete: Restrict)
+  actor  User?         @relation(fields: [changed_by], references: [id])
+
+  @@index([ticket_id, created_at])
+}
+
+model AuthSession {
+  id          String   @id @default(uuid())
+  user_id     String
+  token_hash  String   @unique
+  expires_at  DateTime
+  revoked_at  DateTime?
+  created_at  DateTime @default(now())
+  last_seen_at DateTime?
+  ip_address  String?
+  user_agent  String?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, expires_at])
+  @@index([expires_at, revoked_at])
+}
+
+model IdempotencyRecord {
+  id                String   @id @default(uuid())
+  scope             String
+  key               String
+  request_hash      String
+  response_status   Int?
+  response_body     Json?
+  order_id          String?  @unique
+  created_at        DateTime @default(now())
+  expires_at        DateTime?
+
+  order RestaurantOrder? @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@unique([scope, key])
+  @@index([expires_at])
+}
+
+model StockMovement {
+  id                  String            @id @default(uuid())
+  movement_type       StockMovementType
+  product_id          String?
+  makeline_product_id String?
+  quantity_delta      Decimal           @db.Decimal(14, 4)
+  unit_cost            Decimal?          @db.Decimal(14, 4)
+  value_delta          Decimal?          @db.Decimal(14, 2)
+  source_type          String
+  source_id            String
+  idempotency_key      String            @unique
+  actor_id             String?
+  notes                String?
+  created_at           DateTime          @default(now())
+
+  product          Product?         @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  makeline_product MakelineProduct? @relation(fields: [makeline_product_id], references: [id], onDelete: Restrict)
+  actor            User?            @relation(fields: [actor_id], references: [id])
+
+  @@index([product_id, created_at])
+  @@index([makeline_product_id, created_at])
+  @@index([source_type, source_id])
 }

@@ -10,6 +10,7 @@ Read these documents before running or deploying:
 
 - `PRODUCTION_RELEASE_NOTES.md`
 - `docs/PRODUCTION_READINESS_REPORT.md`
+- `docs/API_PERSISTENCE_GAP_ANALYSIS.md`
 - `docs/PRODUCTION_READINESS_PROMPT.md`
 - `docs/DEPLOYMENT.md`
 - `docs/Restaurant_Management_System_Blueprint_v1.0.pdf`
@@ -54,4 +55,9 @@ node --experimental-strip-types --test src/domain/stock/calculations.node-test.t
 
 ## Deployment
 
-The frontend has Netlify build configuration in `apps/web/netlify.toml`. Deploying the frontend does not make the API production-ready. See `docs/DEPLOYMENT.md` and do not bypass the API's production startup guard.
+The frontend has Netlify build configuration in `apps/web/netlify.toml`; it installs dependencies from the npm-workspaces repository root and runs `npm run build:web`. The API start script requires `tsx` at runtime, so it is declared in `apps/api` production dependencies. The login form no longer pre-fills demo credentials. The Prisma seed requires an explicitly configured one-time bootstrap administrator and does not create demo stock or known default users. Deploying the frontend does not make the API production-ready. See `docs/DEPLOYMENT.md` and do not bypass the API's production startup guard.
+
+
+## Database-backed API implementation
+
+See `docs/DATABASE_BACKED_API_IMPLEMENTATION_PROMPT.md` for the full execution brief. Initial schema and dependency groundwork is present, but the production API remains intentionally blocked until PostgreSQL repositories, migrations, transactions and integration tests are complete.

@@ -4,16 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:domain": "node --import tsx --test src/domain/stock/calculations.node-test.ts src/domain/stock/units.node-test.ts src/domain/vat/calculations.node-test.ts src/domain/store.node-test.ts src/domain/phase4.node-test.ts src/domain/auth.node-test.ts",
-    "test": "npm run test:domain",
+    "test:domain": "node --import tsx --test src/domain/stock/calculations.node-test.ts src/domain/stock/units.node-test.ts src/domain/vat/calculations.node-test.ts src/domain/store.node-test.ts src/domain/phase4.node-test.ts src/domain/auth.node-test.ts src/production-server.node-test.ts",
+    "test": "npm run test:domain && npm run test:schema-contract",
     "start:demo": "node --import tsx src/demo-server.ts",
     "start:prod": "node --import tsx src/production-server.ts",
-    "seed": "node --import tsx prisma/seed.ts"
+    "seed": "node --import tsx prisma/seed.ts",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:validate": "prisma validate --schema prisma/schema.prisma",
+    "db:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:seed": "node --import tsx prisma/seed.ts",
+    "test:schema-contract": "node --test src/prisma-schema.node-test.mjs"
   },
   "dependencies": {
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "@prisma/client": "^6.9.0"
   },
   "devDependencies": {
-    "typescript": "~5.9.0"
+    "typescript": "~5.9.0",
+    "prisma": "^6.9.0"
   }
 }

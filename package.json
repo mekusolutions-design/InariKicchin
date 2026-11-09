@@ -2,11 +2,17 @@
   "name": "inari-kicchin",
   "version": "1.0.0",
   "private": true,
-  "workspaces": ["apps/*"],
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
     "dev:api": "npm run start:prod -w @inari/api",
     "dev:web": "npm run dev -w @inari/web",
     "build:web": "npm run build -w @inari/web",
-    "test": "npm run test -w @inari/api"
+    "test": "npm run test -w @inari/api",
+    "db:generate": "npm run db:generate -w @inari/api",
+    "db:validate": "npm run db:validate -w @inari/api",
+    "db:migrate:deploy": "npm run db:migrate:deploy -w @inari/api",
+    "db:seed": "npm run db:seed -w @inari/api"
   }
 }

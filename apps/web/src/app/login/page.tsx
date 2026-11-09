@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/Button";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("keya8020@gmail.com");
-  const [password, setPassword] = useState("keya2000");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -61,6 +61,7 @@ export default function LoginPage() {
             onChange={(e) => setEmail(e.target.value)}
             className="min-h-11 rounded-lg border border-border px-3 text-sm text-ink"
             autoComplete="username"
+            placeholder="name@restaurant.com"
             required
           />
         </label>
@@ -72,6 +73,7 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             className="min-h-11 rounded-lg border border-border px-3 text-sm text-ink"
             autoComplete="current-password"
+            placeholder="Enter your password"
             required
           />
         </label>

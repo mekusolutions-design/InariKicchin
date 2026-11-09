@@ -6,22 +6,41 @@
 
 ## Frontend — Netlify
 
-Configure the Netlify site:
+This repository is an npm-workspaces monorepo. The workspace root is the repository root; the Next.js app is `apps/web`. Configure the Netlify site as follows:
 
 - Repository: the InariKicchin Git repository
-- Base directory: `apps/web`
-- Build command: `npm run build`
-- Node version: 22 (`.nvmrc` / `netlify.toml`)
-- Environment variable: `NEXT_PUBLIC_API_URL`
+- Base directory: repository root (`.` / leave blank)
+- Package directory: `apps/web` if Netlify requests a Next.js package path; this must not change the workspace install root
+- Build command (configured in `apps/web/netlify.toml`): `npm install --include=dev --workspace=@inari/web --include-workspace-root && npm run build -w @inari/web`
+- Publish directory: `apps/web/.next`
+- Node version: 22 (`.nvmrc`)
+- Environment variable: `NEXT_PUBLIC_API_URL` set to the API origin (do not use a demo API for live operations)
+- Next.js runtime: keep `@netlify/plugin-nextjs` enabled; do not force static export
 
-Netlify's supported Next.js runtime should be used; do not force static export. Run a successful local production build before connecting a production domain. Do not point the public website at the demo API for real business activity.
+The explicit workspace-targeted install selects `@inari/web` and includes the workspace root before invoking the Next.js build in that workspace. The previous Netlify attempt still failed with `next: not found`; this updated command is a corrective attempt, not a verified successful deployment. Inspect the complete install output if the error persists. A committed root `package-lock.json` is recommended but is not included because dependency installation could not complete in this isolated environment.
+
+## API — Render configuration (deployment remains blocked by design)
+
+The API workspace start script uses `node --import tsx`. `tsx` must therefore be in `apps/api` regular `dependencies`, not only `devDependencies`, because Render may omit development dependencies at runtime. The reconciled release candidate now declares `tsx` `^4.23.15` as a production dependency, matching the version verified in the user's local workspace. Render has now resolved this package and reached the intentional production startup guard.
+
+Render workspace settings:
+
+- Root directory: repository root (leave blank)
+- Build command: `npm install`
+- Start command: `npm run start:prod -w @inari/api`
+- Node version: 22 (`.nvmrc`)
+- Environment: `NODE_ENV=production`, `INARI_TOKEN_SECRET` (32+ random characters), `CORS_ORIGINS` (exact frontend origin), and database values only after Prisma integration is completed
+
+The production seed now requires `INARI_BOOTSTRAP_ADMIN_EMAIL`, `INARI_BOOTSTRAP_ADMIN_NAME`, and a unique `INARI_BOOTSTRAP_ADMIN_PASSWORD` of at least 16 characters. Set these only in a secure secret manager and do not commit real values. The seed no longer creates known demo accounts or sample stock.
+
+The production API is intentionally fail-closed. With the current in-memory implementation it exits at startup with a clear error. Do not change `NODE_ENV` to development or remove the guard to force a green deployment. See the blockers below.
 
 ## API — not yet production deployable
 
 Required before API production deployment:
 
-1. Implement Prisma-backed persistence for all domain records, including sales/orders, lines, payments, kitchen tickets, idempotency and audit history.
-2. Add and review database migrations and constraints.
+1. Complete Prisma-backed persistence for all domain records. The current branch now includes foundational Prisma models for orders, order lines, payments, kitchen tickets/transitions, auth sessions, idempotency and stock movements, but these models are not yet wired to the HTTP server.
+2. Generate, review and validate database migrations and constraints against PostgreSQL.
 3. Implement atomic transaction boundaries for business workflows.
 4. Implement production owner bootstrap with no known demo credentials.
 5. Replace process-local session and lockout state with a shared/durable mechanism.

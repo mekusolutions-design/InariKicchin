@@ -1,7 +1,7 @@
 # Inari Kicchin — Production Readiness Assessment
 
 **Assessment date:** 9 November 2026  
-**Source archive:** `InariKicchin-QA-Verified.zip`  
+**Source archive:** `InariKicchin-QA-Verified.zip`, reconciled with subsequent Netlify and Render troubleshooting changes  
 **Business reference:** Restaurant Management System Blueprint v1.0 (6 November 2026)
 
 ## Executive decision: NO-GO for live restaurant operations
@@ -21,6 +21,12 @@ The schema is also incomplete relative to the running domain: it currently defin
 7. Added Netlify build configuration for the Next.js frontend and Node 22 pinning.
 8. Added `.gitignore` and separated local API/web environment templates.
 9. Added this report and a detailed production-readiness master prompt.
+10. Reconciled the Netlify workspace build configuration and Render API dependency declaration against actual deployment logs.
+11. Moved `tsx` to API regular dependencies at `^4.23.15`, matching the user's verified local install.
+12. Removed prefilled demo email/password values from the web login form.
+13. Reworked the Prisma seed so the initial administrator must be explicitly provisioned using secret-manager environment variables; removed hardcoded administrator/manager credentials and demo inventory creation from that seed.
+14. Added a regression test proving the production API refuses to start while persistence is not connected.
+15. Added `docs/API_PERSISTENCE_GAP_ANALYSIS.md` with missing durable models, route migration map, transaction boundaries and implementation sequence.
 
 No costing, stock, VAT or order business formulas were changed.
 
@@ -41,15 +47,16 @@ node --experimental-strip-types --test \
   src/domain/auth.node-test.ts
 ```
 
-Result: **42 tests passed, 0 failed** on Node.js v22.16.0.
+Result: **43 tests passed, 0 failed** on Node.js v22.16.0 (the original 42 domain tests plus one production-startup-guard regression test).
 
 These are domain-level tests. They do not establish database persistence, production API integration, frontend build success or live deployment readiness.
 
 ### Not verified
 
-- Next.js production build: dependencies were not installed in this execution environment; no successful build is claimed.
-- Prisma client generation, migrations or database connectivity: not implemented/verified.
-- Production API startup: intentionally blocked by the new safety gate.
+- Next.js production build: not verified. The Netlify log showed `next: not found`; the reconciled config now explicitly targets the `@inari/web` workspace during dependency installation, but a new Netlify build is still required. Dependency installation in this isolated environment timed out, so no successful local frontend build is claimed.
+- Prisma client generation, migrations or database connectivity: not implemented/verified. `@prisma/client` and `prisma` are not yet declared as workspace dependencies, and no generated client or migration history is included.
+- Production API startup: intentionally blocked by the safety gate. A new automated regression test confirms the guard exits with the expected message.
+- Dependency audit: Render reported two npm audit findings (one moderate, one high) during install. The log did not include package names/advisories, so they remain untriaged; do not run `npm audit fix --force` without reviewing breaking changes.
 - Netlify/Render account deployment, live URL and environment variables: not accessible from this archive review.
 - Browser end-to-end tests and backup/restore drill: not run.
 
@@ -75,18 +82,14 @@ These are domain-level tests. They do not establish database persistence, produc
 
 ### Frontend
 
-The Next.js frontend may be deployed independently for preview/UAT after a successful local production build. Netlify settings:
-
-- Base directory: `apps/web`
-- Build command: `npm run build`
-- Node: 22
+The Next.js frontend may be deployed independently for preview/UAT after a successful production build. The reconciled `apps/web/netlify.toml` explicitly installs the `@inari/web` workspace from the npm workspace root and runs its build. Netlify should keep the repository root as the workspace install root, Node 22, and the Next.js runtime plugin. The publish directory is `apps/web/.next`.
 - Environment: `NEXT_PUBLIC_API_URL` set to the API origin
 
-Do not point the live frontend at the in-memory demo API for real operations.
+Do not point the live frontend at the in-memory demo API for real operations. If Netlify still reports `next: not found`, capture the complete install output preceding the build command; the current failure has not yet been verified as resolved.
 
 ### API
 
-Do not deploy this API as a live production service. The production startup guard is intentional. Keep it enabled until persistent repositories, schema, migrations, authentication provisioning and integration tests are complete.
+Do not deploy this API as a live production service. The production startup guard is intentional. Keep it enabled until persistent repositories, schema, migrations, authentication provisioning and integration tests are complete. Render now gets past the missing `tsx` dependency and reaches this guard as expected.
 
 ## Owner decisions / external prerequisites
 
@@ -99,3 +102,10 @@ Do not deploy this API as a live production service. The production startup guar
 ## Final status
 
 **NO-GO for live restaurant operations.** The package is a hardened development/UAT candidate with a fail-closed production API guard, not a completed production system. Removing the guard without implementing and verifying persistence would reintroduce a critical data-loss risk.
+
+
+## Database-backed API implementation batch — 9 November 2026
+
+This batch adds `docs/DATABASE_BACKED_API_IMPLEMENTATION_PROMPT.md`, declares `@prisma/client` and the Prisma CLI, adds workspace database scripts, and extends `apps/api/prisma/schema.prisma` with foundational order, order-line, payment, kitchen-ticket, kitchen-transition, durable-session, idempotency and stock-movement models plus recipe relations. A dependency-free schema contract test was added.
+
+**This does not complete database persistence.** `production-server.ts` still uses the in-memory store and its production guard remains active. No Prisma migration has been generated or applied, no Prisma client has been generated, and no PostgreSQL schema validation or integration test has been run. The new models must be validated and migrated before repositories and route handlers can safely use them.
