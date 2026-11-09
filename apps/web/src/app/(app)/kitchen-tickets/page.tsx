@@ -22,12 +22,14 @@ interface Ticket {
   ticketNo: string;
   orderId: string;
   status: string;
+  createdAt?: string;
 }
 
 export default function KitchenTicketsPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
     Promise.all([api<Ticket[]>("/kitchen/tickets"), api<Order[]>("/orders")])
@@ -40,17 +42,33 @@ export default function KitchenTicketsPage() {
 
   useEffect(() => {
     load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function advance(id: string, status: string) {
-    await api(`/kitchen/tickets/${id}/status`, {
-      method: "POST",
-      body: JSON.stringify({ status }),
-    });
-    load();
+    setBusy(id);
+    try {
+      await api(`/kitchen/tickets/${id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status }),
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setBusy(null);
+    }
   }
 
-  if (error) return <p className="text-danger">{error}</p>;
+  if (error && tickets.length === 0) {
+    return (
+      <div>
+        <h1 className="page-title">Kitchen Tickets</h1>
+        <p className="mt-2 text-danger">{error}</p>
+      </div>
+    );
+  }
 
   const cols: Record<string, Ticket[]> = {
     NEW: [],
@@ -72,42 +90,54 @@ export default function KitchenTicketsPage() {
     success?: boolean,
   ) {
     return (
-      <div className="min-h-[200px] rounded-[10px] border border-border bg-bg p-3">
-        <h3 className="mb-2 text-[0.8rem] font-semibold uppercase tracking-wide text-ink-muted">
-          {title}{" "}
+      <div className="min-h-[220px] rounded-[10px] border border-border bg-bg p-3">
+        <h3 className="mb-3 flex items-center gap-2 text-[0.8rem] font-semibold uppercase tracking-wide text-ink-muted">
+          {title}
           <Badge tone="info">{list.length}</Badge>
         </h3>
         {list.length === 0 ? (
-          <p className="text-sm text-ink-muted">Empty</p>
+          <p className="py-6 text-center text-sm text-ink-muted">No tickets</p>
         ) : (
           list.map((t) => {
             const o = orders.find((x) => x.id === t.orderId);
             return (
               <div
                 key={t.id}
-                className="mb-2.5 rounded-lg border border-border bg-surface p-3"
+                className="mb-2.5 rounded-lg border border-border bg-surface p-3 shadow-card"
               >
-                <div className="flex items-center gap-2">
-                  <strong>#{t.ticketNo}</strong>
-                  <Badge tone="orange">{o?.orderType ?? ""}</Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  <strong className="text-base">#{t.ticketNo}</strong>
+                  <Badge tone="orange">{o?.orderType ?? "—"}</Badge>
                 </div>
                 <div className="mt-1 text-xs text-ink-muted">
-                  {o?.orderNo} · {o?.tableNo || o?.deliveryRef || ""}
+                  {o?.orderNo}
+                  {o?.tableNo ? ` · Table ${o.tableNo}` : ""}
+                  {o?.deliveryRef ? ` · ${o.deliveryRef}` : ""}
+                  {t.createdAt
+                    ? ` · ${new Date(t.createdAt).toLocaleTimeString("en-KE", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}`
+                    : ""}
                 </div>
-                <ul className="mt-2 list-disc pl-4 text-sm">
+                <ul className="mt-2 space-y-0.5 text-sm">
                   {(o?.lines || []).map((l, i) => (
-                    <li key={i}>
-                      {l.quantity} × {l.nameSnapshot}
+                    <li key={i} className="flex gap-2">
+                      <span className="font-bold tabular-nums text-primary">
+                        {l.quantity}×
+                      </span>
+                      <span>{l.nameSnapshot}</span>
                     </li>
                   ))}
                 </ul>
                 {next ? (
                   <Button
                     variant={success ? "success" : "primary"}
-                    className="mt-2 w-full"
+                    className="mt-3 w-full"
+                    disabled={busy === t.id}
                     onClick={() => advance(t.id, next)}
                   >
-                    {label}
+                    {busy === t.id ? "Updating…" : label}
                   </Button>
                 ) : null}
               </div>
@@ -119,15 +149,23 @@ export default function KitchenTicketsPage() {
   }
 
   return (
-    <div>
-      <h1 className="text-xl font-bold tracking-tight">Kitchen Tickets</h1>
-      <p className="mb-5 text-sm text-ink-muted">
-        New → Preparing → Ready → Served / Collected
-      </p>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="page-title">Kitchen Tickets</h1>
+          <p className="page-sub">
+            New → Preparing → Ready → Served / Collected
+          </p>
+        </div>
+        <Button variant="secondary" className="min-h-9" onClick={load}>
+          Refresh
+        </Button>
+      </div>
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <div className="grid gap-3 md:grid-cols-3">
         {column("New", cols.NEW, "PREPARING", "Start preparing")}
         {column("Preparing", cols.PREPARING, "READY", "Mark ready")}
-        {column("Ready", cols.READY, "SERVED", "Served", true)}
+        {column("Ready", cols.READY, "SERVED", "Served / Collected", true)}
       </div>
     </div>
   );

@@ -5,11 +5,11 @@ import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { NAV_SECTIONS } from "@/lib/nav";
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="flex min-h-screen w-60 flex-col bg-navy px-3 py-4 text-slate-200">
+    <aside className="flex h-full min-h-screen w-60 flex-col bg-navy px-3 py-4 text-slate-200">
       <div className="mb-5 flex items-center gap-2.5 px-2.5">
         <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-sm font-bold text-white">
           IK
@@ -23,7 +23,7 @@ export function Sidebar() {
           </span>
         </div>
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5">
+      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto">
         {NAV_SECTIONS.map((item) => {
           const active =
             pathname === item.href || pathname.startsWith(item.href + "/");
@@ -31,6 +31,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavigate}
               className={clsx(
                 "rounded-lg px-3 py-2.5 text-sm font-medium transition",
                 active
