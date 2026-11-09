@@ -223,7 +223,7 @@ export class ReadRepository {
           where: { status: { in: ['NEW', 'PREPARING'] } },
         }),
         this.prisma.stockClosingSession.findFirst({
-          where: { status: { in: ['SUBMITTED', 'LOCKED'] } },
+          where: { status: 'SUBMITTED' },
           orderBy: { submitted_at: 'desc' },
         }),
         this.prisma.purchase.findMany({
@@ -286,7 +286,7 @@ export class ReadRepository {
       }),
       this.prisma.stockClosingSession.findMany({
         where: {
-          status: { in: ['SUBMITTED', 'LOCKED'] },
+          status: 'SUBMITTED',
           submitted_at: {
             gte: new Date(from),
             lte: new Date(`${to}T23:59:59.999Z`),
