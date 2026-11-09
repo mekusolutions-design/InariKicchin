@@ -5,14 +5,70 @@ import { api, money } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 
+interface SalesReportRaw {
+  orders?: number | unknown[];
+  orderCount?: number;
+  grossSales?: number;
+  totalSales?: number;
+  vatCollected?: number;
+  totalVat?: number;
+  netSales?: number;
+  averageOrder?: number;
+  stockUsedValue?: number;
+  wastageValue?: number;
+  byOrderType?: Record<string, number>;
+  note?: string;
+  from?: string;
+  to?: string;
+}
+
 interface SalesReport {
   orders: number;
   grossSales: number;
   vatCollected: number;
   netSales: number;
+  averageOrder: number;
   stockUsedValue?: number;
   wastageValue?: number;
+  byOrderType?: Record<string, number>;
   note?: string;
+  from?: string;
+  to?: string;
+}
+
+function normalize(raw: SalesReportRaw): SalesReport {
+  const orders =
+    typeof raw.orders === "number"
+      ? raw.orders
+      : typeof raw.orderCount === "number"
+        ? raw.orderCount
+        : Array.isArray(raw.orders)
+          ? raw.orders.length
+          : 0;
+  const grossSales = Number(raw.grossSales ?? raw.totalSales ?? 0);
+  const vatCollected = Number(raw.vatCollected ?? raw.totalVat ?? 0);
+  const netSales =
+    raw.netSales != null ? Number(raw.netSales) : grossSales - vatCollected;
+  return {
+    orders,
+    grossSales,
+    vatCollected,
+    netSales,
+    averageOrder:
+      raw.averageOrder != null
+        ? Number(raw.averageOrder)
+        : orders
+          ? grossSales / orders
+          : 0,
+    stockUsedValue:
+      raw.stockUsedValue != null ? Number(raw.stockUsedValue) : undefined,
+    wastageValue:
+      raw.wastageValue != null ? Number(raw.wastageValue) : undefined,
+    byOrderType: raw.byOrderType,
+    note: raw.note,
+    from: raw.from,
+    to: raw.to,
+  };
 }
 
 export default function ReportsPage() {
@@ -27,10 +83,10 @@ export default function ReportsPage() {
     setLoading(true);
     setError("");
     try {
-      const data = await api<SalesReport>(
-        `/reports/sales?from=${f}&to=${t}`,
+      const data = await api<SalesReportRaw>(
+        `/reports/sales?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`,
       );
-      setR(data);
+      setR(normalize(data));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
       setR(null);
@@ -43,6 +99,32 @@ export default function ReportsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function exportCsv() {
+    try {
+      const token =
+        typeof window !== "undefined"
+          ? localStorage.getItem("INARI_TOKEN")
+          : null;
+      const base = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
+      const res = await fetch(
+        `${base}/reports/sales.csv?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      );
+      if (!res.ok) throw new Error("CSV export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sales-${from}-to-${to}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -72,22 +154,20 @@ export default function ReportsPage() {
             onChange={(e) => setTo(e.target.value)}
           />
         </div>
-        <Button
-          onClick={() => load(from, to)}
-          disabled={loading}
-          className="min-h-11"
-        >
+        <Button onClick={() => load(from, to)} disabled={loading} className="min-h-11">
           {loading ? "Loading…" : "Apply"}
         </Button>
-        <Button variant="secondary" className="min-h-11" disabled>
-          Export Excel
-        </Button>
-        <Button variant="secondary" className="min-h-11" disabled>
-          Export PDF
+        <Button
+          variant="secondary"
+          className="min-h-11"
+          onClick={exportCsv}
+          disabled={loading}
+        >
+          Export CSV
         </Button>
       </div>
 
-      {error ? <p className="text-danger">{error}</p> : null}
+      {error ? <p className="text-danger text-sm">{error}</p> : null}
 
       {r ? (
         <>
@@ -107,6 +187,9 @@ export default function ReportsPage() {
             <div className="kpi-card">
               <div className="label-caps">Orders</div>
               <div className="kpi-value">{r.orders}</div>
+              <div className="kpi-hint">
+                Avg {money(r.averageOrder)}
+              </div>
             </div>
           </div>
 
@@ -114,9 +197,7 @@ export default function ReportsPage() {
             <div className="panel">
               <div className="label-caps">Stock used value</div>
               <div className="mt-1 text-xl font-bold tabular-nums">
-                {r.stockUsedValue != null
-                  ? money(r.stockUsedValue)
-                  : "—"}
+                {r.stockUsedValue != null ? money(r.stockUsedValue) : "—"}
               </div>
               <p className="mt-1 text-xs text-ink-muted">
                 From closing snapshots · not gross profit
@@ -130,6 +211,26 @@ export default function ReportsPage() {
             </div>
           </div>
 
+          {r.byOrderType && Object.keys(r.byOrderType).length > 0 ? (
+            <div className="panel">
+              <h3 className="mb-3 text-[0.95rem] font-semibold">
+                Sales by order type
+              </h3>
+              <ul className="space-y-2 text-sm">
+                {Object.entries(r.byOrderType)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([type, value]) => (
+                    <li key={type} className="flex justify-between gap-4">
+                      <span className="text-ink-muted">{type}</span>
+                      <span className="font-medium tabular-nums">
+                        {money(value)}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap gap-2">
             <Badge tone="info">Stock used value is not profit</Badge>
             <Badge tone="purple">
@@ -138,6 +239,11 @@ export default function ReportsPage() {
           </div>
           {r.note ? (
             <p className="text-xs text-ink-muted">{r.note}</p>
+          ) : null}
+          {r.from && r.to ? (
+            <p className="text-xs text-ink-muted">
+              Period {r.from} → {r.to}
+            </p>
           ) : null}
         </>
       ) : !error && !loading ? (

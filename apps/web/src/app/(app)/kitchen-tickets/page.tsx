@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/Button";
 
 interface Line {
   quantity: number;
-  nameSnapshot: string;
+  nameSnapshot?: string;
+  name?: string;
 }
 interface Order {
   id: string;
@@ -126,7 +127,7 @@ export default function KitchenTicketsPage() {
                       <span className="font-bold tabular-nums text-primary">
                         {l.quantity}×
                       </span>
-                      <span>{l.nameSnapshot}</span>
+                      <span>{l.nameSnapshot ?? l.name ?? "Item"}</span>
                     </li>
                   ))}
                 </ul>

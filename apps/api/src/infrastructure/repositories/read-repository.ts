@@ -172,11 +172,17 @@ export class ReadRepository {
   }
 
   async meta() {
-    const [orderTypes, paymentMethods, vat] = await Promise.all([
+    const [orderTypes, paymentMethods, vat, users] = await Promise.all([
       this.prisma.orderType.findMany({ where: { is_active: true }, orderBy: { sort_order: 'asc' } }),
       this.prisma.paymentMethod.findMany({ where: { is_active: true } }),
       this.prisma.vatSetting.findFirst({ orderBy: { effective_from: 'desc' } }),
+      this.prisma.user.findMany({
+        where: { is_active: true },
+        orderBy: { full_name: 'asc' },
+        select: { id: true, full_name: true, email: true, role: true },
+      }),
     ]);
+    const ratePercent = vat ? Number(vat.rate_percent) : 16;
     return {
       orderTypes: orderTypes.map((o) => ({
         name: o.name,
@@ -184,12 +190,19 @@ export class ReadRepository {
         requiresReference: o.requires_reference,
       })),
       paymentMethods: paymentMethods.map((p) => p.name),
-      vat: vat
-        ? {
-            rate: Number(vat.rate_percent) / 100,
-            pricesIncludeVat: vat.prices_include_vat,
-          }
-        : { rate: 0.16, pricesIncludeVat: true },
+      vat: {
+        enabled: vat ? true : true,
+        ratePercent,
+        // decimal form retained for POS/VAT helpers that expect 0.16
+        rate: ratePercent / 100,
+        pricesIncludeVat: vat ? vat.prices_include_vat : true,
+      },
+      users: users.map((u) => ({
+        id: u.id,
+        fullName: u.full_name,
+        email: u.email,
+        role: u.role,
+      })),
       durable: true,
     };
   }
@@ -198,62 +211,115 @@ export class ReadRepository {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const [todayOrders, allProducts, wastageToday, openTickets] = await Promise.all([
-      this.prisma.restaurantOrder.findMany({
-        where: { created_at: { gte: todayStart }, status: { not: 'CANCELLED' } },
-        include: { payments: true },
-      }),
-      this.prisma.product.findMany({ where: { is_active: true } }),
-      this.prisma.wastageRecord.count({ where: { wasted_on: { gte: todayStart } } }),
-      this.prisma.kitchenTicket.count({
-        where: { status: { in: ['NEW', 'PREPARING'] } },
-      }),
-    ]);
+    const [todayOrders, allProducts, wastageToday, openTickets, lastClosing, purchasesToday] =
+      await Promise.all([
+        this.prisma.restaurantOrder.findMany({
+          where: { created_at: { gte: todayStart }, status: { not: 'CANCELLED' } },
+          include: { payments: true },
+        }),
+        this.prisma.product.findMany({ where: { is_active: true }, include: { base_unit: true } }),
+        this.prisma.wastageRecord.count({ where: { wasted_on: { gte: todayStart } } }),
+        this.prisma.kitchenTicket.count({
+          where: { status: { in: ['NEW', 'PREPARING'] } },
+        }),
+        this.prisma.stockClosingSession.findFirst({
+          where: { status: { in: ['SUBMITTED', 'LOCKED'] } },
+          orderBy: { submitted_at: 'desc' },
+        }),
+        this.prisma.purchase.findMany({
+          where: { date_received: { gte: todayStart } },
+          include: { items: true },
+        }),
+      ]);
 
     const low = allProducts.filter((p) => Number(p.on_hand_qty) <= Number(p.min_stock_level));
     const salesTotal = todayOrders.reduce((s, o) => s + Number(o.grand_total), 0);
     const orderCount = todayOrders.length;
     const byPayment: Record<string, number> = {};
+    const byOrderType: Record<string, number> = {};
     for (const o of todayOrders) {
+      byOrderType[o.order_type] = (byOrderType[o.order_type] ?? 0) + Number(o.grand_total);
       for (const p of o.payments) {
         if (p.status === 'CONFIRMED') {
           byPayment[p.method_name] = (byPayment[p.method_name] ?? 0) + Number(p.amount);
         }
       }
     }
+    const stockReceivedToday = purchasesToday.reduce(
+      (s, p) => s + p.items.reduce((is, i) => is + Number(i.total_price), 0),
+      0,
+    );
 
     return {
       todaySales: salesTotal,
       todayOrders: orderCount,
       averageOrderValue: orderCount ? salesTotal / orderCount : 0,
       salesByPaymentMethod: byPayment,
+      salesByOrderType: Object.entries(byOrderType).map(([type, value]) => ({ type, value })),
+      stockReceivedToday,
+      lastClosingValueUsed: lastClosing ? Number(lastClosing.total_value_used) : 0,
+      lastClosingValueWasted: lastClosing ? Number(lastClosing.total_value_wasted) : 0,
       lowStock: low.map((p) => ({
         id: p.id,
         name: p.name,
+        onHand: Number(p.on_hand_qty),
         onHandQty: Number(p.on_hand_qty),
+        min: Number(p.min_stock_level),
         minStock: Number(p.min_stock_level),
+        unit: p.base_unit?.code,
       })),
       wastageTodayCount: wastageToday,
       openKitchenTickets: openTickets,
+      note: 'Stock used value is utilisation cost, not profit.',
     };
   }
 
   async salesReport(from: string, to: string) {
-    const rows = await this.prisma.restaurantOrder.findMany({
-      where: {
-        created_at: { gte: new Date(from), lte: new Date(`${to}T23:59:59.999Z`) },
-        status: { not: 'CANCELLED' },
-      },
-      include: { lines: true, payments: true, kitchen_tickets: true },
-      orderBy: { created_at: 'asc' },
-    });
+    const [rows, closings] = await Promise.all([
+      this.prisma.restaurantOrder.findMany({
+        where: {
+          created_at: { gte: new Date(from), lte: new Date(`${to}T23:59:59.999Z`) },
+          status: { not: 'CANCELLED' },
+        },
+        include: { lines: true, payments: true, kitchen_tickets: true },
+        orderBy: { created_at: 'asc' },
+      }),
+      this.prisma.stockClosingSession.findMany({
+        where: {
+          status: { in: ['SUBMITTED', 'LOCKED'] },
+          submitted_at: {
+            gte: new Date(from),
+            lte: new Date(`${to}T23:59:59.999Z`),
+          },
+        },
+      }),
+    ]);
+    const gross = rows.reduce((s, o) => s + Number(o.grand_total), 0);
+    const vat = rows.reduce((s, o) => s + Number(o.vat_total), 0);
+    const byOrderType: Record<string, number> = {};
+    for (const o of rows) {
+      byOrderType[o.order_type] = (byOrderType[o.order_type] ?? 0) + Number(o.grand_total);
+    }
+    const stockUsedValue = closings.reduce((s, c) => s + Number(c.total_value_used), 0);
+    const wastageValue = closings.reduce((s, c) => s + Number(c.total_value_wasted), 0);
     return {
       from,
       to,
+      // Frontend contract (also used by in-memory store)
+      orders: rows.length,
+      grossSales: gross,
+      vatCollected: vat,
+      netSales: gross - vat,
+      averageOrder: rows.length ? gross / rows.length : 0,
+      byOrderType,
+      stockUsedValue,
+      wastageValue,
+      note: 'Stock used value is utilisation cost, not profit. Excludes wages, rent, utilities.',
+      // Detail retained for CSV / advanced consumers
       orderCount: rows.length,
-      totalSales: rows.reduce((s, o) => s + Number(o.grand_total), 0),
-      totalVat: rows.reduce((s, o) => s + Number(o.vat_total), 0),
-      orders: rows.map((o) => this.mapOrder(o)),
+      totalSales: gross,
+      totalVat: vat,
+      orderRows: rows.map((o) => this.mapOrder(o)),
     };
   }
 
@@ -295,7 +361,8 @@ export class ReadRepository {
     const report = await this.salesReport(from, to);
     const header = ['orderNo', 'createdAt', 'orderType', 'status', 'paymentStatus', 'subtotal', 'vatAmount', 'totalAmount', 'cashierId'];
     const lines = [header.join(',')];
-    for (const o of report.orders) {
+    const detail = (report as { orderRows?: any[] }).orderRows ?? [];
+    for (const o of detail) {
       lines.push([
         o.orderNo,
         o.createdAt,
