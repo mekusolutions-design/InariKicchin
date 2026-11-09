@@ -1,27 +1,34 @@
-import { cn } from "@/lib/cn";
-import type { HTMLAttributes } from "react";
+import clsx from "clsx";
 
-const TONES = {
-  neutral: "bg-surface-muted text-ink-muted border-border",
-  primary: "bg-primary-50 text-primary-700 border-primary-200",
-  success: "bg-success-50 text-success-600 border-success-200",
-  warning: "bg-warning-50 text-warning-700 border-warning-200",
-  danger: "bg-danger-50 text-danger-700 border-danger-200",
-} as const;
+type Tone = "ok" | "warn" | "err" | "info" | "purple" | "orange";
 
-export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
-  tone?: keyof typeof TONES;
-}
+const tones: Record<Tone, string> = {
+  ok: "bg-success-soft text-[#166534]",
+  warn: "bg-warning-soft text-[#92400e]",
+  err: "bg-danger-soft text-[#991b1b]",
+  info: "bg-info-soft text-[#1e40af]",
+  purple: "bg-purple-soft text-[#5b21b6]",
+  orange: "bg-primary-soft text-[#9a3412]",
+};
 
-export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
+export function Badge({
+  tone = "info",
+  children,
+  className,
+}: {
+  tone?: Tone;
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
     <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4",
-        TONES[tone],
+      className={clsx(
+        "inline-block rounded-full px-2 py-0.5 text-[0.72rem] font-semibold",
+        tones[tone],
         className,
       )}
-      {...props}
-    />
+    >
+      {children}
+    </span>
   );
 }

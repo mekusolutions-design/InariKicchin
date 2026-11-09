@@ -1,5 +1,0 @@
-nodeLinker: isolated
-
-packages:
-  - "apps/*"
-  - "packages/*"

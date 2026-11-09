@@ -1,16 +1,12 @@
 {
-  "name": "RestFlow",
+  "name": "inari-kicchin",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "workspaces": ["apps/*"],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.30.3",
-  "devDependencies": {
-    "turbo": "^2.8.12"
+    "dev:api": "npm run start:prod -w @inari/api",
+    "dev:web": "npm run dev -w @inari/web",
+    "build:web": "npm run build -w @inari/web",
+    "test": "npm run test -w @inari/api"
   }
 }
