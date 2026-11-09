@@ -97,3 +97,11 @@ Domain formulas were **not** modified.
 ## 7. Conclusion
 
 Master QA prompt **applied**. Domain logic **intact**. **42 tests green**. Critical auth/permission and ESM defects **fixed**. Remaining items are documented product gaps, not silent formula failures.
+
+---
+
+## 7. Follow-up production-readiness assessment (9 November 2026)
+
+The report above documents domain QA, not full production readiness. A subsequent release assessment identified that `production-server.ts` still uses the in-memory demo store and is not wired to Prisma. The prior report's accepted-gap wording must not be interpreted as approval for live operations.
+
+See `PRODUCTION_READINESS_REPORT.md` for the current decision and evidence. The API now has a fail-closed production startup guard; `/ready` returns 503 while persistence is non-durable. The 42 domain tests were rerun and passed, but database integration, full frontend build and live deployment remain unverified.

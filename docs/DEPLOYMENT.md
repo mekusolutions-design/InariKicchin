@@ -1,79 +1,70 @@
-# Inari Kicchin — Phase 5 Deployment & Operations
+# Inari Kicchin — Deployment and Operations
 
-## What Phase 5 adds
+## Current release status
 
-| Item | Purpose |
-|------|---------|
-| Scrypt password hashing | No plaintext demo hashes in production path |
-| Session tokens | Bearer auth on API |
-| Permission matrix | Role checks on every protected route |
-| `/health` + `/ready` | Load balancer / uptime probes |
-| Prisma seed | Bootstrap admin + units + sample catalog |
-| `.env.example` | Secrets template |
-| Production server | `npm run start:prod` |
+**The frontend can be prepared for preview/UAT. The API is not approved for live operations.** `production-server.ts` currently uses an in-memory demo store. It intentionally refuses to start with `NODE_ENV=production` until persistent Prisma repositories and production user provisioning are implemented and tested. Do not remove this guard as a deployment workaround.
 
-## Deploy checklist
+## Frontend — Netlify
 
-### 1. Database
+Configure the Netlify site:
 
-```bash
+- Repository: the InariKicchin Git repository
+- Base directory: `apps/web`
+- Build command: `npm run build`
+- Node version: 22 (`.nvmrc` / `netlify.toml`)
+- Environment variable: `NEXT_PUBLIC_API_URL`
+
+Netlify's supported Next.js runtime should be used; do not force static export. Run a successful local production build before connecting a production domain. Do not point the public website at the demo API for real business activity.
+
+## API — not yet production deployable
+
+Required before API production deployment:
+
+1. Implement Prisma-backed persistence for all domain records, including sales/orders, lines, payments, kitchen tickets, idempotency and audit history.
+2. Add and review database migrations and constraints.
+3. Implement atomic transaction boundaries for business workflows.
+4. Implement production owner bootstrap with no known demo credentials.
+5. Replace process-local session and lockout state with a shared/durable mechanism.
+6. Add runtime request validation, rate limiting, structured logging and observability.
+7. Verify backup and restore.
+8. Complete integration and end-to-end tests.
+
+## Local development API
+
+```powershell
 cd apps/api
-cp ../../.env.example .env
-# Edit DATABASE_URL and DIRECT_URL
-
-npx prisma migrate deploy   # or: npx prisma db push
-npx tsx prisma/seed.ts
-```
-
-### 2. API process
-
-```bash
+$env:NODE_ENV = "development"
+$env:INARI_TOKEN_SECRET = "replace-with-a-random-secret-at-least-32-characters"
+$env:CORS_ORIGINS = "http://localhost:3001"
 npm install
-npm test
-NODE_ENV=production INARI_TOKEN_SECRET=<long-random> npm run start:prod
+npm run start:prod
 ```
 
-### 3. Auth smoke test
+The API is an in-memory development/demo server. `/health` is a liveness endpoint; `/ready` returns 503 because storage is not durable.
 
-```bash
-curl -s -X POST http://localhost:4040/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"keya8020@gmail.com","password":"keya2000"}'
+## Local web
 
-# Use accessToken:
-curl -s http://localhost:4040/dashboard \
-  -H "Authorization: Bearer <token>"
+```powershell
+cd apps/web
+Copy-Item .env.example .env.local
+npm install
+npm run dev
 ```
 
-### 4. Web UI
+Set `NEXT_PUBLIC_API_URL` to the local API URL for development only.
 
-Open `apps/web/public/index.html`. Log in with admin credentials.  
-Token is stored in `localStorage.INARI_TOKEN`.
+## Secrets
 
-### 5. Backups
+- Never commit `.env` files.
+- Use hosting-provider secret storage for server secrets.
+- `NEXT_PUBLIC_*` variables are exposed to the browser and must never contain credentials.
+- Generate `INARI_TOKEN_SECRET` with a cryptographically secure random generator; use 32+ characters.
+- Do not use the documented demo credentials for production.
 
-- Nightly logical dump: `pg_dump $DATABASE_URL > backup-$(date +%F).sql`
-- Weekly restore test on a staging database
-- Retain 30 days of backups off-host
+## Release rollback
 
-### 6. Rollback
-
-1. Redeploy previous API artifact  
-2. Restore DB from last known good dump if a migration was applied  
-3. Confirm `/health` and login  
-
-## Security notes
-
-- Change `INARI_TOKEN_SECRET` and all demo passwords before go-live  
-- Force HTTPS at the reverse proxy (Caddy / Nginx / Cloudflare)  
-- Do not expose `/auth/demo-users` in production (`NODE_ENV=production` hides it)  
-- Rate-limit `/auth/login` at the proxy (app also locks after 5 failures / 15 min)  
-
-## Owner acceptance (Phase 5)
-
-- [ ] Admin can log in  
-- [ ] Cashier cannot submit closing (403)  
-- [ ] Manager can receive stock and close day  
-- [ ] `/health` returns ok behind load balancer  
-- [ ] Backup + restore drill recorded  
-- [ ] Demo passwords rotated  
+- Keep the previous frontend and API release artifacts.
+- Back up the database before every production migration.
+- Test restore on a separate database before relying on the backup.
+- Apply migrations using a reviewed forward migration; do not reset production data.
+- Roll back application code only when schema compatibility is confirmed. Restore data only under an approved incident procedure.
