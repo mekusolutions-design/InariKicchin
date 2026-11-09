@@ -14,7 +14,9 @@ const hasDb = Boolean(process.env.DATABASE_URL);
 const prisma = hasDb ? new PrismaClient() : null;
 
 test('integration: persistent login/logout against PostgreSQL', { skip: !hasDb }, async () => {
-  const session = await loginPersistent('admin@inarikicchin.test', 'SecureBootstrapPass1!');
+  const email = process.env.INARI_BOOTSTRAP_ADMIN_EMAIL || 'admin@inarikicchin.test';
+  const password = process.env.INARI_BOOTSTRAP_ADMIN_PASSWORD || 'SecureBootstrapPass1!';
+  const session = await loginPersistent(email, password);
   assert.ok(session.token);
   assert.equal(session.role, 'ADMINISTRATOR');
   const resolved = await requirePersistentSession(`Bearer ${session.token}`);

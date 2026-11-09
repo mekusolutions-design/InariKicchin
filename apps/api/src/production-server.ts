@@ -32,7 +32,7 @@ import {
 } from './infrastructure/database.ts';
 import { StockRepository } from './infrastructure/repositories/stock-repository.ts';
 import { OrderRepository } from './infrastructure/repositories/order-repository.ts';
-import { ReadRepository } from './infrastructure/repositories/read-repository.ts';
+import { ReadRepository, CatalogRepository } from './infrastructure/repositories/read-repository.ts';
 
 // SAFETY GATE: refuse production startup on in-memory storage.
 // Operator must set INARI_DURABLE_CONFIRMED=1 only after migrations, seed and
@@ -60,11 +60,13 @@ const useDurable = hasDatabase; // prefer PostgreSQL whenever DATABASE_URL is co
 let stockRepo: StockRepository | null = null;
 let orderRepo: OrderRepository | null = null;
 let readRepo: ReadRepository | null = null;
+let catalogRepo: CatalogRepository | null = null;
 if (useDurable) {
   const prisma = getPrismaClient();
   stockRepo = new StockRepository(prisma);
   orderRepo = new OrderRepository(prisma);
   readRepo = new ReadRepository(prisma);
+  catalogRepo = new CatalogRepository(prisma);
 }
 
 const PORT = Number(process.env.PORT ?? 4040);
@@ -252,7 +254,11 @@ const server = createServer(async (req, res) => {
       const to = url.searchParams.get('to') ?? from;
       applyCors(req, res);
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(salesReportCsv(store, from, to));
+      if (useDurable && readRepo) {
+        res.end(await readRepo.salesReportCsv(from, to));
+      } else {
+        res.end(salesReportCsv(store, from, to));
+      }
       return;
     }
     if (req.method === 'GET' && path === '/reports/suppliers') {
@@ -260,6 +266,7 @@ const server = createServer(async (req, res) => {
       assertPermission(s.role, 'reports:read');
       const from = url.searchParams.get('from') ?? '2020-01-01';
       const to = url.searchParams.get('to') ?? '2099-12-31';
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.supplierAnalytics(from, to));
       return json(req, res, 200, supplierAnalytics(store, from, to));
     }
     if (req.method === 'GET' && path === '/menu') {
@@ -347,9 +354,34 @@ const server = createServer(async (req, res) => {
       const s = await auth(req);
       assertPermission(s.role, 'orders:read');
       const id = path.split('/')[2];
+      if (useDurable && readRepo) {
+        const payload = await readRepo.etimsReceipt(id);
+        if (!payload) return json(req, res, 404, { error: 'Order not found' });
+        return json(req, res, 200, payload);
+      }
       const order = store.orders.find((o) => o.id === id);
       if (!order) return json(req, res, 404, { error: 'Order not found' });
       return json(req, res, 200, buildEtimsReceipt(store, order));
+    }
+
+
+    if (req.method === 'POST' && path === '/suppliers') {
+      const s = await auth(req);
+      assertPermission(s.role, 'suppliers:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.createSupplier({ ...body, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Supplier create requires durable PostgreSQL' });
+    }
+    if (req.method === 'POST' && path === '/products') {
+      const s = await auth(req);
+      assertPermission(s.role, 'products:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.createProduct({ ...body, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Product create requires durable PostgreSQL' });
     }
 
     json(req, res, 404, { error: 'Not found', path });

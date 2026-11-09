@@ -290,4 +290,191 @@ export class ReadRepository {
       kitchenTicketId: o.kitchen_tickets?.[0]?.id,
     };
   }
+
+  async salesReportCsv(from: string, to: string): Promise<string> {
+    const report = await this.salesReport(from, to);
+    const header = ['orderNo', 'createdAt', 'orderType', 'status', 'paymentStatus', 'subtotal', 'vatAmount', 'totalAmount', 'cashierId'];
+    const lines = [header.join(',')];
+    for (const o of report.orders) {
+      lines.push([
+        o.orderNo,
+        o.createdAt,
+        o.orderType,
+        o.status,
+        o.paymentStatus,
+        o.subtotal.toFixed(2),
+        o.vatAmount.toFixed(2),
+        o.totalAmount.toFixed(2),
+        o.cashierId,
+      ].map((v) => {
+        const s = String(v ?? '');
+        return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+      }).join(','));
+    }
+    lines.push(`TOTALS,,,${report.orderCount},,${report.totalSales.toFixed(2)},${report.totalVat.toFixed(2)},,`);
+    return lines.join('\n') + '\n';
+  }
+
+  async supplierAnalytics(from: string, to: string) {
+    const purchases = await this.prisma.purchase.findMany({
+      where: {
+        date_received: {
+          gte: new Date(from),
+          lte: new Date(`${to}T23:59:59.999Z`),
+        },
+      },
+      include: { items: true, supplier: true },
+    });
+    const bySupplier = new Map<string, { supplierId: string; supplierName: string; purchaseCount: number; totalSpend: number; items: number }>();
+    for (const p of purchases) {
+      const spend = p.items.reduce((s, i) => s + Number(i.total_price), 0);
+      const cur = bySupplier.get(p.supplier_id) ?? {
+        supplierId: p.supplier_id,
+        supplierName: p.supplier?.name ?? p.supplier_id,
+        purchaseCount: 0,
+        totalSpend: 0,
+        items: 0,
+      };
+      cur.purchaseCount += 1;
+      cur.totalSpend += spend;
+      cur.items += p.items.length;
+      bySupplier.set(p.supplier_id, cur);
+    }
+    return [...bySupplier.values()].map((s) => ({
+      ...s,
+      totalSpend: Math.round(s.totalSpend * 100) / 100,
+    }));
+  }
+
+  async etimsReceipt(orderId: string) {
+    const order = await this.prisma.restaurantOrder.findUnique({
+      where: { id: orderId },
+      include: { lines: true, payments: true },
+    });
+    if (!order) return null;
+    const kra = await this.prisma.systemSetting.findUnique({ where: { key: 'restaurant_kra_pin' } });
+    return {
+      kraPin: kra?.value ?? 'P0XXXXXXXXX',
+      invoiceNumber: order.order_no,
+      timestamp: order.created_at.toISOString(),
+      lines: order.lines.map((l) => ({
+        name: l.name_snapshot,
+        qty: Number(l.quantity),
+        unitPrice: Number(l.unit_price),
+        lineTotal: Number(l.line_total),
+        vatAmount: Number(l.vat_amount),
+      })),
+      subtotal: Number(order.subtotal),
+      vatTotal: Number(order.vat_total),
+      grandTotal: Number(order.grand_total),
+      paymentMethod: order.payments.map((p) => p.method_name).join('+') || 'UNPAID',
+      etimsReady: true as const,
+      etimsSubmitted: false as const,
+    };
+  }
+
+}
+
+// --- Admin write helpers (schema-aligned) ---
+
+export class CatalogRepository {
+  private readonly prisma: import('@prisma/client').PrismaClient;
+  constructor(prisma: import('@prisma/client').PrismaClient) {
+    this.prisma = prisma;
+  }
+
+  async createSupplier(input: {
+    name: string;
+    contactPerson?: string;
+    phone?: string;
+    email?: string;
+    userId?: string;
+  }) {
+    if (!input.name?.trim()) throw new Error('Supplier name is required');
+    const row = await this.prisma.supplier.create({
+      data: {
+        name: input.name.trim(),
+        contact_person: input.contactPerson ?? null,
+        phone: input.phone ?? null,
+        email: input.email ?? null,
+      },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'SUPPLIER_CREATED',
+        entity_type: 'supplier',
+        entity_id: row.id,
+        new_values: { name: row.name },
+      },
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      contactPerson: row.contact_person,
+      phone: row.phone,
+      email: row.email,
+      isActive: row.is_active,
+    };
+  }
+
+  async createProduct(input: {
+    name: string;
+    baseUnitCode: string;
+    categoryName?: string;
+    minStock?: number;
+    userId?: string;
+  }) {
+    if (!input.name?.trim()) throw new Error('Product name is required');
+    const unit = await this.prisma.unit.findUnique({ where: { code: input.baseUnitCode } });
+    if (!unit) throw new Error(`Unknown unit: ${input.baseUnitCode}`);
+    let categoryId: string | null = null;
+    if (input.categoryName?.trim()) {
+      const cat = await this.prisma.productCategory.upsert({
+        where: { name: input.categoryName.trim() },
+        create: { name: input.categoryName.trim() },
+        update: {},
+      });
+      categoryId = cat.id;
+    } else {
+      const cat = await this.prisma.productCategory.upsert({
+        where: { name: 'General' },
+        create: { name: 'General' },
+        update: {},
+      });
+      categoryId = cat.id;
+    }
+    const row = await this.prisma.product.create({
+      data: {
+        name: input.name.trim(),
+        category_id: categoryId,
+        base_unit_id: unit.id,
+        min_stock_level: input.minStock ?? 0,
+        on_hand_qty: 0,
+        avg_unit_cost: 0,
+        is_active: true,
+      },
+      include: { base_unit: true, category: true },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'PRODUCT_CREATED',
+        entity_type: 'product',
+        entity_id: row.id,
+        new_values: { name: row.name },
+      },
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      baseUnit: row.base_unit.code,
+      minStock: Number(row.min_stock_level),
+      onHandQty: Number(row.on_hand_qty),
+      avgUnitCost: Number(row.avg_unit_cost),
+      isActive: row.is_active,
+      categoryId: row.category_id,
+      categoryName: row.category?.name,
+    };
+  }
 }

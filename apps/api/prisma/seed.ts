@@ -1,9 +1,7 @@
 /**
  * Prisma seed for production PostgreSQL.
- *
- * This seed deliberately does not create sample stock, suppliers, demo staff, or
- * known credentials. The first administrator must be provisioned explicitly
- * through the deployment secret manager.
+ * Idempotent reference data + optional bootstrap administrator.
+ * Avoids long interactive transactions (compatible with PgBouncer poolers).
  */
 import { PrismaClient, RoleName } from '@prisma/client';
 import { randomBytes, scryptSync } from 'node:crypto';
@@ -37,7 +35,6 @@ async function main() {
     throw new Error('INARI_BOOTSTRAP_ADMIN_PASSWORD must be at least 16 characters.');
   }
 
-  // Safe, repeatable reference data. No demo inventory or preloaded transactions.
   const units = [
     { code: 'kg', name: 'Kilogram', dimension: 'WEIGHT' as const, factor_to_base: 1 },
     { code: 'g', name: 'Gram', dimension: 'WEIGHT' as const, factor_to_base: 0.001 },
@@ -46,57 +43,54 @@ async function main() {
     { code: 'pcs', name: 'Piece', dimension: 'COUNT' as const, factor_to_base: 1 },
   ];
 
-  await prisma.$transaction(async (tx) => {
-    for (const unit of units) {
-      await tx.unit.upsert({ where: { code: unit.code }, create: unit, update: {} });
-    }
+  for (const unit of units) {
+    await prisma.unit.upsert({ where: { code: unit.code }, create: unit, update: {} });
+  }
 
-    await tx.user.upsert({
-      where: { email: adminEmail },
-      create: {
-        full_name: adminName,
-        email: adminEmail,
-        password_hash: hashPassword(adminPassword),
-        role: RoleName.ADMINISTRATOR,
-      },
-      // Do not silently rotate an existing administrator's password on reseed.
+  await prisma.user.upsert({
+    where: { email: adminEmail },
+    create: {
+      full_name: adminName,
+      email: adminEmail,
+      password_hash: hashPassword(adminPassword),
+      role: RoleName.ADMINISTRATOR,
+    },
+    update: {},
+  });
+
+  const orderTypes = [
+    'Dine In', 'Pick Up', 'Glovo', 'Bolt Food', 'Uber Eats',
+    'SpeedyDrop', 'NAI Deliver', 'Yum Deliveries',
+  ];
+  for (let i = 0; i < orderTypes.length; i++) {
+    const name = orderTypes[i];
+    const isDelivery = !['Dine In', 'Pick Up'].includes(name);
+    await prisma.orderType.upsert({
+      where: { name },
+      create: { name, is_delivery: isDelivery, requires_reference: isDelivery, sort_order: i },
       update: {},
     });
+  }
 
-    const orderTypes = [
-      'Dine In', 'Pick Up', 'Glovo', 'Bolt Food', 'Uber Eats',
-      'SpeedyDrop', 'NAI Deliver', 'Yum Deliveries',
-    ];
-    for (let i = 0; i < orderTypes.length; i++) {
-      const name = orderTypes[i];
-      const isDelivery = !['Dine In', 'Pick Up'].includes(name);
-      await tx.orderType.upsert({
-        where: { name },
-        create: { name, is_delivery: isDelivery, requires_reference: isDelivery, sort_order: i },
-        update: {},
-      });
-    }
+  for (const name of ['Cash', 'M-Pesa', 'Card', 'Bank transfer', 'Platform payout']) {
+    await prisma.paymentMethod.upsert({
+      where: { name },
+      create: { name, requires_reference: name === 'M-Pesa' || name === 'Platform payout' },
+      update: {},
+    });
+  }
 
-    for (const name of ['Cash', 'M-Pesa', 'Card', 'Bank transfer', 'Platform payout']) {
-      await tx.paymentMethod.upsert({
-        where: { name },
-        create: { name, requires_reference: name === 'M-Pesa' || name === 'Platform payout' },
-        update: {},
-      });
-    }
-
-    const existingVatSetting = await tx.vatSetting.findFirst();
-    if (!existingVatSetting) {
-      await tx.vatSetting.create({
-        data: {
-          vat_enabled: true,
-          rate_percent: 16,
-          prices_include_vat: true,
-          effective_from: new Date(),
-        },
-      });
-    }
-  });
+  const existingVatSetting = await prisma.vatSetting.findFirst();
+  if (!existingVatSetting) {
+    await prisma.vatSetting.create({
+      data: {
+        vat_enabled: true,
+        rate_percent: 16,
+        prices_include_vat: true,
+        effective_from: new Date(),
+      },
+    });
+  }
 
   console.log(`Reference data seeded. Bootstrap administrator provisioned: ${adminEmail}`);
 }
