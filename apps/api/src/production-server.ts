@@ -72,8 +72,13 @@ if (useDurable) {
 const PORT = Number(process.env.PORT ?? 4040);
 const startedAt = Date.now();
 
+// Accept CORS_ORIGINS (preferred) or legacy CORS_ORIGIN alias.
+const corsEnv =
+  process.env.CORS_ORIGINS?.trim() ||
+  process.env.CORS_ORIGIN?.trim() ||
+  'http://localhost:3001';
 const allowedOrigins = new Set(
-  (process.env.CORS_ORIGINS ?? 'http://localhost:3001')
+  corsEnv
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
