@@ -20,14 +20,32 @@ import {
   DEMO_CREDENTIALS,
   type Session,
 } from './domain/auth.ts';
+import {
+  loginPersistent,
+  logoutPersistent,
+  requirePersistentSession,
+} from './modules/auth/persistent-auth.ts';
+import {
+  getPrismaClient,
+  verifyDatabaseConnection,
+  disconnectDatabase,
+} from './infrastructure/database.ts';
+import { StockRepository } from './infrastructure/repositories/stock-repository.ts';
+import { OrderRepository } from './infrastructure/repositories/order-repository.ts';
+import { ReadRepository } from './infrastructure/repositories/read-repository.ts';
 
-// SAFETY GATE: this archive's HTTP server still uses the in-memory demo store.
-// Refuse production startup rather than silently losing business data on restart.
+// SAFETY GATE: refuse production startup on in-memory storage.
+// Operator must set INARI_DURABLE_CONFIRMED=1 only after migrations, seed and
+// integration verification on the target PostgreSQL database.
+const hasDatabase = Boolean(process.env.DATABASE_URL);
+const durableConfirmed = process.env.INARI_DURABLE_CONFIRMED === '1';
 if (process.env.NODE_ENV === 'production') {
-  throw new Error(
-    'Production startup blocked: persistent Prisma-backed repositories are not wired into production-server.ts. ' +
-    'Do not deploy this API for live operations until database persistence, migrations, and production user provisioning are implemented and tested.',
-  );
+  if (!hasDatabase || !durableConfirmed) {
+    throw new Error(
+      'Production startup blocked: DATABASE_URL and INARI_DURABLE_CONFIRMED=1 are required. ' +
+      'Do not deploy until PostgreSQL migrations, bootstrap admin seed, and integration tests are verified.',
+    );
+  }
 }
 
 if (!process.env.INARI_TOKEN_SECRET || process.env.INARI_TOKEN_SECRET.length < 32) {
@@ -37,6 +55,17 @@ if (!process.env.INARI_TOKEN_SECRET || process.env.INARI_TOKEN_SECRET.length < 3
 const store = seedDemoStore() as InariStore & Phase4State;
 enablePhase4(store);
 bootstrapAdminPasswords(store);
+
+const useDurable = hasDatabase; // prefer PostgreSQL whenever DATABASE_URL is configured
+let stockRepo: StockRepository | null = null;
+let orderRepo: OrderRepository | null = null;
+let readRepo: ReadRepository | null = null;
+if (useDurable) {
+  const prisma = getPrismaClient();
+  stockRepo = new StockRepository(prisma);
+  orderRepo = new OrderRepository(prisma);
+  readRepo = new ReadRepository(prisma);
+}
 
 const PORT = Number(process.env.PORT ?? 4040);
 const startedAt = Date.now();
@@ -89,7 +118,10 @@ async function readBody(req: import('node:http').IncomingMessage) {
   }
 }
 
-function auth(req: import('node:http').IncomingMessage): Session {
+async function auth(req: import('node:http').IncomingMessage): Promise<Session> {
+  if (process.env.DATABASE_URL) {
+    return requirePersistentSession(req.headers.authorization);
+  }
   return requireSession(req.headers.authorization);
 }
 
@@ -110,16 +142,41 @@ const server = createServer(async (req, res) => {
       });
     }
     if (req.method === 'GET' && path === '/ready') {
-      return json(req, res, 503, {
-        ready: false,
-        storage: 'in-memory-demo-store',
-        durable: false,
-        reason: 'Prisma persistence is not connected to the production HTTP server.',
-      });
+      if (!process.env.DATABASE_URL) {
+        return json(req, res, 503, {
+          ready: false,
+          storage: 'in-memory-demo-store',
+          durable: false,
+          reason: 'DATABASE_URL is not configured.',
+        });
+      }
+      try {
+        await verifyDatabaseConnection();
+        return json(req, res, 200, {
+          ready: true,
+          storage: 'postgresql',
+          durable: process.env.INARI_DURABLE_CONFIRMED === '1',
+          auth: 'persistent',
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'database unreachable';
+        return json(req, res, 503, {
+          ready: false,
+          storage: 'postgresql',
+          durable: false,
+          reason: msg,
+        });
+      }
     }
     if (req.method === 'POST' && path === '/auth/login') {
       const body = await readBody(req);
-      const session = login(store, body.email, body.password);
+      const meta = {
+        ipAddress: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim(),
+        userAgent: req.headers['user-agent'],
+      };
+      const session = process.env.DATABASE_URL
+        ? await loginPersistent(body.email, body.password, meta)
+        : login(store, body.email, body.password);
       return json(req, res, 200, {
         accessToken: session.token,
         tokenType: 'Bearer',
@@ -134,12 +191,12 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path === '/auth/logout') {
       const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-      logout(token);
+      if (process.env.DATABASE_URL) await logoutPersistent(token);
+      else logout(token);
       return json(req, res, 200, { ok: true });
     }
     if (req.method === 'GET' && path === '/auth/demo-users') {
-      // Only for non-production
-      if (process.env.NODE_ENV === 'production') {
+      if (process.env.NODE_ENV === 'production' || process.env.DATABASE_URL) {
         return json(req, res, 404, { error: 'Not found' });
       }
       return json(req, res, 200, DEMO_CREDENTIALS);
@@ -147,43 +204,49 @@ const server = createServer(async (req, res) => {
 
     // Authenticated reads
     if (req.method === 'GET' && path === '/me') {
-      const s = auth(req);
+      const s = await auth(req);
       return json(req, res, 200, s);
     }
     if (req.method === 'GET' && path === '/dashboard') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'dashboard:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.dashboard());
       return json(req, res, 200, store.dashboard());
     }
     if (req.method === 'GET' && path === '/products') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'products:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.products());
       return json(req, res, 200, store.products);
     }
     if (req.method === 'GET' && path === '/orders') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'orders:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.orders());
       return json(req, res, 200, store.orders);
     }
     if (req.method === 'GET' && path === '/kitchen/tickets') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'kitchen:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.kitchenTickets());
       return json(req, res, 200, store.tickets);
     }
     if (req.method === 'GET' && path === '/audit') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'audit:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.audit());
       return json(req, res, 200, store.audit);
     }
     if (req.method === 'GET' && path === '/reports/sales') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'reports:read');
       const from = url.searchParams.get('from') ?? new Date().toISOString().slice(0, 10);
       const to = url.searchParams.get('to') ?? from;
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.salesReport(from, to));
       return json(req, res, 200, store.salesReport(from, to));
     }
     if (req.method === 'GET' && path === '/reports/sales.csv') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'reports:read');
       const from = url.searchParams.get('from') ?? new Date().toISOString().slice(0, 10);
       const to = url.searchParams.get('to') ?? from;
@@ -193,19 +256,21 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && path === '/reports/suppliers') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'reports:read');
       const from = url.searchParams.get('from') ?? '2020-01-01';
       const to = url.searchParams.get('to') ?? '2099-12-31';
       return json(req, res, 200, supplierAnalytics(store, from, to));
     }
     if (req.method === 'GET' && path === '/menu') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'menu:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.menu());
       return json(req, res, 200, { categories: store.menuCategories, items: store.menuItems });
     }
     if (req.method === 'GET' && path === '/meta') {
-      auth(req);
+      await auth(req);
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.meta());
       return json(req, res, 200, {
         orderTypes: store.orderTypes,
         paymentMethods: store.paymentMethods,
@@ -219,57 +284,67 @@ const server = createServer(async (req, res) => {
       });
     }
     if (req.method === 'GET' && path === '/closings') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'closing:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.closings());
       return json(req, res, 200, store.closings);
     }
     if (req.method === 'GET' && path === '/makeline') {
-      auth(req);
+      await auth(req);
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.makelineProducts());
       return json(req, res, 200, store.makelineProducts);
     }
     if (req.method === 'GET' && path === '/suppliers') {
-      auth(req);
+      await auth(req);
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.suppliers());
       return json(req, res, 200, store.suppliers);
     }
 
-    // Mutations
+    // Mutations — prefer PostgreSQL repositories when DATABASE_URL is set
     if (req.method === 'POST' && path === '/purchases') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'purchases:write');
       const body = await readBody(req);
       body.createdById = body.createdById ?? s.userId;
+      if (useDurable && stockRepo) return json(req, res, 201, await stockRepo.receiveStock(body));
       return json(req, res, 201, store.receiveStock(body));
     }
     if (req.method === 'POST' && path === '/closings') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'closing:write');
       const body = await readBody(req);
       body.submittedById = body.submittedById ?? s.userId;
+      if (!body.idempotencyKey) body.idempotencyKey = (req.headers['idempotency-key'] as string) || crypto.randomUUID();
+      if (useDurable && stockRepo) return json(req, res, 201, await stockRepo.submitClosing(body));
       return json(req, res, 201, store.submitClosing(body));
     }
     if (req.method === 'POST' && path === '/pos/orders') {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'pos:write');
       const body = await readBody(req);
       body.cashierId = body.cashierId ?? s.userId;
+      if (!body.idempotencyKey) body.idempotencyKey = (req.headers['idempotency-key'] as string) || crypto.randomUUID();
+      if (useDurable && orderRepo) return json(req, res, 201, await orderRepo.createOrder(body));
       return json(req, res, 201, store.createOrder(body));
     }
     if (req.method === 'POST' && path.startsWith('/kitchen/tickets/') && path.endsWith('/status')) {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'kitchen:write');
       const id = path.split('/')[3];
       const body = await readBody(req);
+      if (useDurable && orderRepo) return json(req, res, 200, await orderRepo.updateTicketStatus(id, body.status, s.userId));
       return json(req, res, 200, store.updateTicketStatus(id, body.status, s.userId));
     }
     if (req.method === 'POST' && path.startsWith('/orders/') && path.endsWith('/void')) {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'orders:void');
       const id = path.split('/')[2];
       const body = await readBody(req);
+      if (useDurable && orderRepo) return json(req, res, 200, await orderRepo.voidOrder(id, body.reason, s.userId));
       return json(req, res, 200, store.voidOrder(id, body.reason, s.userId));
     }
     if (req.method === 'GET' && path.startsWith('/orders/') && path.endsWith('/etims')) {
-      const s = auth(req);
+      const s = await auth(req);
       assertPermission(s.role, 'orders:read');
       const id = path.split('/')[2];
       const order = store.orders.find((o) => o.id === id);
