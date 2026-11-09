@@ -1,67 +1,66 @@
 # Render Staging Deploy Guide
-**Fix applied:** production startup no longer requires `INARI_DURABLE_CONFIRMED=1` to boot.
-It only requires `DATABASE_URL` so the process cannot start in memory-only mode.
 
-## Required Render environment variables
+## Fix for: `@prisma/client did not initialize yet`
 
-| Variable | Required | Notes |
-|----------|----------|-------|
-| `DATABASE_URL` | **Yes** | Supabase **pooler** URL (`…pooler.supabase.com:6543/…?pgbouncer=true`) |
-| `DIRECT_URL` | **Yes** | Supabase **direct** URL (`…:5432/…`) for migrations if run from CI |
-| `INARI_TOKEN_SECRET` | **Yes** | ≥ 32 random characters (do not reuse JWT_SECRET name unless you also map it in code) |
-| `CORS_ORIGINS` | **Yes** | e.g. `https://inarikicchin.netlify.app,http://localhost:8082` (comma-separated, no spaces or with trim) |
-| `NODE_ENV` | Yes | `production` |
-| `PORT` | Auto | Render sets this |
-| `INARI_DURABLE_CONFIRMED` | **No for boot** | Set to `1` only **after** staging smoke tests pass |
+Render installs packages but does **not** run `prisma generate` unless you tell it to.
+This package now:
 
-### Name mapping from your `.env` file
+1. Puts `prisma` in **dependencies** (not only devDependencies).
+2. Runs `prisma generate` on **postinstall**.
+3. Runs `prisma generate` again at the start of **start:prod**.
 
-If Render currently has:
-- `CORS_ORIGIN` → also set **`CORS_ORIGINS`** (code reads `CORS_ORIGINS`)
-- `JWT_SECRET` → also set **`INARI_TOKEN_SECRET`** (code reads `INARI_TOKEN_SECRET`)
+## Recommended Render settings
 
-## Build / start commands
+| Setting | Value |
+|---------|--------|
+| Root Directory | *(repo root)* |
+| Build Command | `npm install` |
+| Start Command | `npm run start:prod -w @inari/api` |
+| Node | 22 |
 
-Root of monorepo:
+Alternative explicit build (safest):
 
 ```text
-Build:  npm install
-Start:  npm run start:prod -w @inari/api
+Build Command:  npm install && npx prisma generate --schema apps/api/prisma/schema.prisma
+Start Command:  npm run start:prod -w @inari/api
 ```
 
-Node version: **22** (see `.nvmrc`).
+## Required environment variables
 
-## After deploy — smoke checklist
+| Variable | Required |
+|----------|----------|
+| `DATABASE_URL` | Yes — Supabase pooler URL |
+| `DIRECT_URL` | Yes — Supabase direct URL |
+| `INARI_TOKEN_SECRET` | Yes — ≥ 32 characters |
+| `CORS_ORIGINS` | Yes — Netlify origin(s) |
+| `NODE_ENV` | `production` |
+| `INARI_DURABLE_CONFIRMED` | Leave unset until smoke tests pass |
+
+### Name mapping
+
+If you only set `JWT_SECRET` / `CORS_ORIGIN`, also set:
+
+- `INARI_TOKEN_SECRET` = same value as JWT secret  
+- `CORS_ORIGINS` = same value as CORS_ORIGIN  
+
+## After deploy
 
 ```bash
-curl -sS https://<your-render-host>/health
-curl -sS https://<your-render-host>/ready
-# expect ready:true, storage:postgresql
-
-curl -sS -X POST https://<your-render-host>/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"<bootstrap-admin>","password":"<bootstrap-password>"}'
+curl -sS https://<host>/health
+curl -sS https://<host>/ready
+# expect: ready true, storage postgresql
 ```
 
-Then exercise: products, suppliers, purchases, POS, kitchen, closings, reports/sales.csv.
+## Do not use `npm audit fix --force` on deploy
 
-Only after that succeeds, set on Render:
+That can break the lockfile. Ignore audit noise on Render unless you intentionally upgrade deps in a PR.
+
+## Production confirm flag
+
+Only after health, ready, login, purchase, POS, and reports work:
 
 ```text
 INARI_DURABLE_CONFIRMED=1
 ```
 
-and restart the service.
-
-## What this fix changes in code
-
-`apps/api/src/production-server.ts` production gate:
-
-- **Before:** required `DATABASE_URL` **and** `INARI_DURABLE_CONFIRMED=1` → staging could never start for verification.
-- **After:** requires only `DATABASE_URL` in production. Confirm flag is reported by `/ready` only.
-
-## Do not
-
-- Set `INARI_DURABLE_CONFIRMED=1` just to make the process start.
-- Deploy to a production service.
-- Commit secrets.
+Then restart the service.
