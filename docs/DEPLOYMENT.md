@@ -87,3 +87,7 @@ Set `NEXT_PUBLIC_API_URL` to the local API URL for development only.
 - Test restore on a separate database before relying on the backup.
 - Apply migrations using a reviewed forward migration; do not reset production data.
 - Roll back application code only when schema compatibility is confirmed. Restore data only under an approved incident procedure.
+
+## Production database gate
+
+The API currently remains blocked in production because its HTTP routes still use the in-memory `InariStore`. Do not remove or bypass this guard. The shared Prisma runtime helper is infrastructure only; repositories, route migration, migrations, and PostgreSQL integration tests remain outstanding. See `DATABASE_BACKED_API_IMPLEMENTATION_REPORT.md` and `PHASE_6_DATABASE_BACKED_API_EXECUTION_PROMPT.md`.

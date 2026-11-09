@@ -617,3 +617,14 @@ model StockMovement {
   @@index([makeline_product_id, created_at])
   @@index([source_type, source_id])
 }
+
+
+/// Shared login-failure counters; survives API restarts and scales across instances.
+model AuthLoginAttempt {
+  email        String   @id
+  failed_count Int      @default(0)
+  locked_until DateTime?
+  updated_at   DateTime @updatedAt
+
+  @@index([locked_until])
+}

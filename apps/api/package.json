@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:domain": "node --import tsx --test src/domain/stock/calculations.node-test.ts src/domain/stock/units.node-test.ts src/domain/vat/calculations.node-test.ts src/domain/store.node-test.ts src/domain/phase4.node-test.ts src/domain/auth.node-test.ts src/production-server.node-test.ts",
+    "test:domain": "node --import tsx --test src/domain/stock/calculations.node-test.ts src/domain/stock/units.node-test.ts src/domain/vat/calculations.node-test.ts src/domain/store.node-test.ts src/domain/phase4.node-test.ts src/domain/auth.node-test.ts src/production-server.node-test.ts src/infrastructure/database.node-test.ts",
     "test": "npm run test:domain && npm run test:schema-contract",
     "start:demo": "node --import tsx src/demo-server.ts",
     "start:prod": "node --import tsx src/production-server.ts",

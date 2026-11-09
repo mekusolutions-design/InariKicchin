@@ -43,3 +43,9 @@ test('auth sessions persist token hashes rather than raw bearer tokens', () => {
   assert.match(session, /token_hash\s+String\s+@unique/);
   assert.doesNotMatch(session, /token\s+String\s+@unique/);
 });
+
+test('persistent authentication includes shared database lockout state', () => {
+  assert.match(schema, /model AuthLoginAttempt\s*\{/);
+  assert.match(schema, /failed_count\s+Int\s+@default\(0\)/);
+  assert.match(schema, /locked_until\s+DateTime\?/);
+});

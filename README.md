@@ -61,3 +61,5 @@ The frontend has Netlify build configuration in `apps/web/netlify.toml`; it inst
 ## Database-backed API implementation
 
 See `docs/DATABASE_BACKED_API_IMPLEMENTATION_PROMPT.md` for the full execution brief. Initial schema and dependency groundwork is present, but the production API remains intentionally blocked until PostgreSQL repositories, migrations, transactions and integration tests are complete.
+
+> **Database migration status:** The production API is still intentionally blocked while routes use the in-memory `InariStore`. See `docs/DATABASE_BACKED_API_IMPLEMENTATION_REPORT.md` and execute `docs/PHASE_6_DATABASE_BACKED_API_EXECUTION_PROMPT.md`. Do not bypass the production guard.
