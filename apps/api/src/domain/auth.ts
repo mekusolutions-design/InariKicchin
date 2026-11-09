@@ -43,6 +43,12 @@ export function verifyPassword(plain: string, stored: string): boolean {
   return timingSafeEqual(derived, expected);
 }
 
+/** Production authentication must never accept the legacy demo-only plaintext marker. */
+export function verifyPersistentPassword(plain: string, stored: string): boolean {
+  if (typeof stored !== 'string' || !stored.startsWith('scrypt:')) return false;
+  return verifyPassword(plain, stored);
+}
+
 function signToken(payload: string): string {
   const sig = createHmac('sha256', TOKEN_SECRET).update(payload).digest('hex');
   return `${payload}.${sig}`;

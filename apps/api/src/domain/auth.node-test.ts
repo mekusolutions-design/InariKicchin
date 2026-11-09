@@ -4,6 +4,7 @@ import { seedDemoStore } from './store.ts';
 import {
   hashPassword,
   verifyPassword,
+  verifyPersistentPassword,
   login,
   logout,
   requireSession,
@@ -18,6 +19,8 @@ describe('Phase 5 — Auth', () => {
     assert.match(h, /^scrypt:/);
     assert.equal(verifyPassword('keya2000', h), true);
     assert.equal(verifyPassword('wrong', h), false);
+    assert.equal(verifyPersistentPassword('keya2000', h), true);
+    assert.equal(verifyPersistentPassword('keya2000', 'hashed:keya2000'), false);
   });
 
   it('login returns bearer session for admin', () => {

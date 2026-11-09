@@ -49,3 +49,17 @@ test('persistent authentication includes shared database lockout state', () => {
   assert.match(schema, /failed_count\s+Int\s+@default\(0\)/);
   assert.match(schema, /locked_until\s+DateTime\?/);
 });
+
+
+test('additive migration enforces exclusive inventory target relationships', () => {
+  const migration = readFileSync(resolve(here, '../prisma/migrations/20261109000200_enforce_stock_target_integrity/migration.sql'), 'utf8');
+  for (const constraint of [
+    'RecipeLine_exactly_one_output_target_check',
+    'RecipeLine_exactly_one_input_target_check',
+    'StockAdjustment_exactly_one_target_check',
+    'WastageRecord_exactly_one_target_check',
+    'StockClosingItem_target_matches_type_check',
+    'StockMovement_exactly_one_target_check',
+  ]) assert.ok(migration.includes(constraint), `Missing ${constraint}`);
+  assert.doesNotMatch(migration, /\b(DROP|TRUNCATE|DELETE)\b/i);
+});

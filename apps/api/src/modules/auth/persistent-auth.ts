@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { getPrismaClient } from '../../infrastructure/database.ts';
-import { verifyPassword, type Session } from '../../domain/auth.ts';
+import { verifyPersistentPassword, type Session } from '../../domain/auth.ts';
 
 const SESSION_TTL_MS = Number(process.env.INARI_SESSION_TTL_MS ?? 8 * 60 * 60 * 1000);
 const MAX_FAILED_ATTEMPTS = 5;
@@ -39,7 +39,7 @@ export async function loginPersistent(emailInput: string, password: string, meta
   }
 
   const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !user.is_active || !verifyPassword(password, user.password_hash)) {
+  if (!user || !user.is_active || !verifyPersistentPassword(password, user.password_hash)) {
     const next = await prisma.authLoginAttempt.upsert({
       where: { email },
       create: { email, failed_count: 1 },
