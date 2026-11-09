@@ -18,6 +18,7 @@ export class OrderRepository {
     cashierId: string;
     orderType: string;
     platformReference?: string;
+    deliveryRef?: string;
     tableNo?: string;
     idempotencyKey: string;
     lines: Array<{
@@ -46,7 +47,8 @@ export class OrderRepository {
 
       const orderType = await tx.orderType.findUnique({ where: { name: input.orderType } });
       if (!orderType?.is_active) throw new Error(`Unknown order type: ${input.orderType}`);
-      if (orderType.requires_reference && !input.platformReference?.trim()) {
+      const deliveryRef = (input.deliveryRef ?? input.platformReference ?? '').trim();
+      if (orderType.requires_reference && !deliveryRef) {
         throw new Error('Delivery platform reference is required for this order type');
       }
 
@@ -120,7 +122,7 @@ export class OrderRepository {
           status: 'NEW',
           payment_status: paymentStatus,
           order_type: input.orderType,
-          delivery_ref: input.platformReference ?? null,
+          delivery_ref: deliveryRef || null,
           table_no: input.tableNo ?? null,
           subtotal,
           vat_total: vatTotal,
@@ -303,23 +305,27 @@ export class OrderRepository {
   }
 
   private mapOrder(o: any) {
-    return {
+    const order = {
       id: o.id,
       orderNo: o.order_no,
       status: o.status,
       paymentStatus: o.payment_status,
       orderType: o.order_type,
       platformReference: o.delivery_ref,
+      deliveryRef: o.delivery_ref,
       tableNo: o.table_no,
       subtotal: Number(o.subtotal),
       vatAmount: Number(o.vat_total),
+      vatTotal: Number(o.vat_total),
       totalAmount: Number(o.grand_total),
+      grandTotal: Number(o.grand_total),
       cashierId: o.cashier_id,
       createdAt: o.created_at?.toISOString?.() ?? o.created_at,
       lines: (o.lines ?? []).map((l: any) => ({
         id: l.id,
         menuItemId: l.menu_item_id,
         name: l.name_snapshot,
+        nameSnapshot: l.name_snapshot,
         quantity: Number(l.quantity),
         unitPrice: Number(l.unit_price),
         lineTotal: Number(l.line_total),
@@ -334,11 +340,18 @@ export class OrderRepository {
         reference: p.reference,
       })),
       kitchenTicketId: o.kitchen_tickets?.[0]?.id,
-      tickets: (o.kitchen_tickets ?? []).map((t: any) => ({
-        id: t.id,
-        ticketNo: t.ticket_no,
-        status: t.status,
-      })),
     };
+    const ticketRow = o.kitchen_tickets?.[0];
+    const ticket = ticketRow
+      ? {
+          id: ticketRow.id,
+          orderId: o.id,
+          ticketNo: ticketRow.ticket_no,
+          status: ticketRow.status,
+        }
+      : undefined;
+    // Frontend contract: { order, ticket }
+    return { order, ticket };
   }
 }
+

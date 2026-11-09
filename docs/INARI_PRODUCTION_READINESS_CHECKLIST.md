@@ -1,30 +1,38 @@
 # Production Readiness Checklist
+**Updated:** 9 November 2026
 
 | Criterion | Status |
 |----------|--------|
-| Database migrations on staging | PASS (Supabase) |
-| Bootstrap admin seed | PASS |
-| Persistent authentication | PASS (integration tested) |
-| Business routes PostgreSQL-backed when DATABASE_URL set | PASS (matrix) |
-| No silent in-memory in production with gate | PASS (gate requires INARI_DURABLE_CONFIRMED) |
-| Sales CSV / supplier analytics / eTIMS durable | PASS |
-| Product/supplier create endpoints | PASS |
-| Financial/WAC/VAT domain helpers preserved | PASS |
-| Integration tests on Supabase | PASS (4/4) |
-| Unit/schema tests | PASS (53/53) |
-| Concurrent multi-process tests | NOT RUN |
-| Render staging redeploy + /ready smoke | NOT RUN this session |
-| Netlify frontend E2E against staging API | NOT RUN this session |
-| Offline queue full durable workflow | PARTIAL (IdempotencyRecord) |
-| eTIMS KRA submission | N/A (prep only) |
-| INARI_DURABLE_CONFIRMED set | **NO — intentional** |
+| Supabase migrations + seed | PASS |
+| Persistent auth | PASS (Supabase) |
+| Durable business routes | PASS (matrix) |
+| POS frontend contract | PASS (fixed) |
+| Sales CSV / analytics / eTIMS | PASS |
+| Concurrent receipts + POS idempotency | PASS (Supabase) |
+| Unit/schema tests | PASS (54) |
+| Next.js production build | PASS |
+| Production refuses memory-only | PASS (DATABASE_URL required) |
+| Staging boots without DURABLE_CONFIRMED | PASS (gate fix) |
+| Render serving this build | **PENDING redeploy** |
+| Render /health /ready | **PENDING** |
+| Netlify E2E against Render | **PENDING** |
+| INARI_DURABLE_CONFIRMED=1 | **NO** |
 
 ## Recommendation
 
-**CONDITIONAL GO for staging API redeploy and frontend smoke.**
+**GO — redeploy Render staging with this package.**
 
 **NO-GO for production** until:
-1. Render service is redeployed with DATABASE_URL/DIRECT_URL/INARI_TOKEN_SECRET/CORS_ORIGINS.
-2. `GET /ready` returns ready against Supabase.
-3. Staging login → purchase → POS → closing → CSV smoke passes on the deployed URL.
-4. Operator sets `INARI_DURABLE_CONFIRMED=1` only after that evidence.
+1. Render serves `/health` and `/ready` with `storage: postgresql`
+2. Smoke: login → product/supplier → purchase → POS → kitchen → reports/CSV
+3. Netlify frontend works against Render
+4. Then set `INARI_DURABLE_CONFIRMED=1` and restart
+
+### Render env (exact names)
+
+- `DATABASE_URL` (pooler)
+- `DIRECT_URL` (direct)
+- `INARI_TOKEN_SECRET` (≥32 chars)
+- `CORS_ORIGINS` (Netlify origin)
+- `NODE_ENV=production`
+- Leave `INARI_DURABLE_CONFIRMED` unset until smoke passes

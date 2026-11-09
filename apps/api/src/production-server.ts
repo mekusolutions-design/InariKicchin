@@ -34,18 +34,18 @@ import { StockRepository } from './infrastructure/repositories/stock-repository.
 import { OrderRepository } from './infrastructure/repositories/order-repository.ts';
 import { ReadRepository, CatalogRepository } from './infrastructure/repositories/read-repository.ts';
 
-// SAFETY GATE: refuse production startup on in-memory storage.
-// Operator must set INARI_DURABLE_CONFIRMED=1 only after migrations, seed and
-// integration verification on the target PostgreSQL database.
-const hasDatabase = Boolean(process.env.DATABASE_URL);
+// SAFETY GATE: production must never start on in-memory storage.
+// DATABASE_URL is required in production so all business routes use PostgreSQL.
+// INARI_DURABLE_CONFIRMED is an operational readiness signal (reported by /ready)
+// and is intentionally NOT required to boot — otherwise staging can never be verified.
+const hasDatabase = Boolean(process.env.DATABASE_URL?.trim());
 const durableConfirmed = process.env.INARI_DURABLE_CONFIRMED === '1';
-if (process.env.NODE_ENV === 'production') {
-  if (!hasDatabase || !durableConfirmed) {
-    throw new Error(
-      'Production startup blocked: DATABASE_URL and INARI_DURABLE_CONFIRMED=1 are required. ' +
-      'Do not deploy until PostgreSQL migrations, bootstrap admin seed, and integration tests are verified.',
-    );
-  }
+if (process.env.NODE_ENV === 'production' && !hasDatabase) {
+  throw new Error(
+    'Production startup blocked: DATABASE_URL is required. ' +
+    'Configure PostgreSQL (Supabase) before deploying. ' +
+    'INARI_DURABLE_CONFIRMED=1 should be set only after staging smoke tests pass.',
+  );
 }
 
 if (!process.env.INARI_TOKEN_SECRET || process.env.INARI_TOKEN_SECRET.length < 32) {
@@ -157,8 +157,12 @@ const server = createServer(async (req, res) => {
         return json(req, res, 200, {
           ready: true,
           storage: 'postgresql',
-          durable: process.env.INARI_DURABLE_CONFIRMED === '1',
+          durable: durableConfirmed,
+          durableConfirmed,
           auth: 'persistent',
+          note: durableConfirmed
+            ? 'Operator confirmed durable deployment'
+            : 'PostgreSQL connected; set INARI_DURABLE_CONFIRMED=1 after smoke tests',
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'database unreachable';

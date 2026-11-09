@@ -110,9 +110,10 @@ test('integration: POS order + kitchen transition + void', { skip: !hasDb }, asy
     lines: [{ menuItemId: menuItem.id, quantity: 2 }],
     payments: [{ method: 'Cash', amount: 1700 }],
   });
-  assert.ok(order.id);
-  assert.equal(order.paymentStatus, 'PAID');
-  assert.ok(order.kitchenTicketId || order.tickets?.length);
+  const created = order.order ?? order;
+  assert.ok(created.id);
+  assert.equal(created.paymentStatus, 'PAID');
+  assert.ok(created.kitchenTicketId || order.ticket);
 
   // Idempotent retry returns same order
   const again = await orders.createOrder({
@@ -122,13 +123,13 @@ test('integration: POS order + kitchen transition + void', { skip: !hasDb }, asy
     lines: [{ menuItemId: menuItem.id, quantity: 2 }],
     payments: [{ method: 'Cash', amount: 1700 }],
   });
-  assert.equal(again.id, order.id);
+  assert.equal((again.order ?? again).id, created.id);
 
-  const ticketId = order.kitchenTicketId || order.tickets![0].id;
+  const ticketId = created.kitchenTicketId || order.ticket?.id;
   const preparing = await orders.updateTicketStatus(ticketId, 'PREPARING', admin!.id);
   assert.equal(preparing.status, 'PREPARING');
 
-  const voided = await orders.voidOrder(order.id, 'Customer cancelled', admin!.id);
+  const voided = await orders.voidOrder(created.id, 'Customer cancelled', admin!.id);
   assert.equal(voided.status, 'CANCELLED');
 });
 
