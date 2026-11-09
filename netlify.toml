@@ -1,0 +1,1 @@
+[build]\n  base = "."\n  command = "npm install --include=dev --workspace=@inari/web --include-workspace-root && npm run build -w @inari/web"\n  publish = "apps/web/.next"\n\n[build.environment]\n  NODE_VERSION = "22"\n  NPM_CONFIG_PRODUCTION = "false"\n\n[[plugins]]\n  package = "@netlify/plugin-nextjs"\n

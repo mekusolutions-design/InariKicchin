@@ -1,9 +1,15 @@
 /**
  * Typed client for the Inari Kicchin production API (Render / local).
+ * API origin comes only from NEXT_PUBLIC_API_URL (set in Netlify / local env).
+ * No hardcoded host fallbacks in source.
  */
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-  "http://localhost:4040";
+const raw = process.env.NEXT_PUBLIC_API_URL?.trim();
+if (!raw) {
+  throw new Error(
+    "NEXT_PUBLIC_API_URL is not set. Configure it in Netlify environment variables (or apps/web/.env.local for local dev).",
+  );
+}
+const API_URL = raw.replace(/\/$/, "");
 
 export class ApiError extends Error {
   constructor(
