@@ -659,6 +659,185 @@ export class CatalogRepository {
     };
   }
 
+
+  async createUser(input: {
+    fullName: string;
+    email: string;
+    password: string;
+    role: 'ADMINISTRATOR' | 'MANAGER' | 'CASHIER' | 'KITCHEN_STAFF';
+    phone?: string;
+    actorId?: string;
+    actorRole?: string;
+  }) {
+    const fullName = String(input.fullName ?? '').trim();
+    const email = String(input.email ?? '').trim().toLowerCase();
+    const password = String(input.password ?? '');
+    if (fullName.length < 2) throw new Error('Full name is required');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Valid email is required');
+    if (password.length < 8) throw new Error('Password must be at least 8 characters');
+    const allowed = new Set(['ADMINISTRATOR', 'MANAGER', 'CASHIER', 'KITCHEN_STAFF']);
+    if (!allowed.has(input.role)) throw new Error('Invalid role');
+    if (input.role === 'ADMINISTRATOR' && input.actorRole !== 'ADMINISTRATOR') {
+      throw new Error('Only administrators can create administrator accounts');
+    }
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) throw new Error('A user with this email already exists');
+    const { randomBytes, scryptSync } = await import('node:crypto');
+    const salt = randomBytes(16).toString('hex');
+    const hash = scryptSync(password, salt, 64).toString('hex');
+    const row = await this.prisma.user.create({
+      data: {
+        full_name: fullName,
+        email,
+        phone: input.phone?.trim() || null,
+        password_hash: `scrypt:${salt}:${hash}`,
+        role: input.role,
+        is_active: true,
+      },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.actorId,
+        action: 'USER_CREATED',
+        entity_type: 'user',
+        entity_id: row.id,
+        new_values: { email: row.email, role: row.role },
+      },
+    });
+    return {
+      id: row.id,
+      fullName: row.full_name,
+      email: row.email,
+      role: row.role,
+      isActive: row.is_active,
+    };
+  }
+
+  async setUserActive(input: {
+    userId: string;
+    isActive: boolean;
+    actorId?: string;
+    actorRole?: string;
+  }) {
+    const target = await this.prisma.user.findUnique({ where: { id: input.userId } });
+    if (!target) throw new Error('User not found');
+    if (target.role === 'ADMINISTRATOR' && input.actorRole !== 'ADMINISTRATOR') {
+      throw new Error('Cannot change administrator status');
+    }
+    if (input.actorId === target.id && !input.isActive) {
+      throw new Error('Cannot deactivate your own account');
+    }
+    const row = await this.prisma.user.update({
+      where: { id: input.userId },
+      data: { is_active: input.isActive },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.actorId,
+        action: input.isActive ? 'USER_ACTIVATED' : 'USER_DEACTIVATED',
+        entity_type: 'user',
+        entity_id: row.id,
+        new_values: { isActive: row.is_active },
+      },
+    });
+    return { id: row.id, email: row.email, isActive: row.is_active, role: row.role };
+  }
+
+  async listOrderTypes() {
+    const rows = await this.prisma.orderType.findMany({ orderBy: { sort_order: 'asc' } });
+    return rows.map((o) => ({
+      id: o.id,
+      name: o.name,
+      isDelivery: o.is_delivery,
+      requiresReference: o.requires_reference,
+      isActive: o.is_active,
+      sortOrder: o.sort_order,
+    }));
+  }
+
+  async upsertOrderType(input: {
+    id?: string;
+    name: string;
+    isDelivery?: boolean;
+    requiresReference?: boolean;
+    isActive?: boolean;
+    sortOrder?: number;
+    userId?: string;
+  }) {
+    const name = String(input.name ?? '').trim();
+    if (!name) throw new Error('Order type name is required');
+    const data = {
+      name,
+      is_delivery: Boolean(input.isDelivery),
+      requires_reference: Boolean(input.requiresReference ?? input.isDelivery),
+      is_active: input.isActive !== false,
+      sort_order: input.sortOrder ?? 0,
+    };
+    let row;
+    if (input.id) {
+      row = await this.prisma.orderType.update({ where: { id: input.id }, data });
+    } else {
+      row = await this.prisma.orderType.upsert({
+        where: { name },
+        create: data,
+        update: data,
+      });
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: input.id ? 'ORDER_TYPE_UPDATED' : 'ORDER_TYPE_UPSERTED',
+        entity_type: 'order_type',
+        entity_id: row.id,
+        new_values: { name: row.name, isDelivery: row.is_delivery },
+      },
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      isDelivery: row.is_delivery,
+      requiresReference: row.requires_reference,
+      isActive: row.is_active,
+      sortOrder: row.sort_order,
+    };
+  }
+
+  async setManagerPin(input: { pin: string; userId?: string }) {
+    const pin = String(input.pin ?? '');
+    if (!/^\d{4,8}$/.test(pin)) throw new Error('Manager PIN must be 4–8 digits');
+    const { randomBytes, scryptSync } = await import('node:crypto');
+    const salt = randomBytes(16).toString('hex');
+    const hash = scryptSync(pin, salt, 64).toString('hex');
+    const value = `scrypt:${salt}:${hash}`;
+    await this.prisma.systemSetting.upsert({
+      where: { key: 'manager_authorization_pin_hash' },
+      create: { key: 'manager_authorization_pin_hash', value, updated_by: input.userId },
+      update: { value, updated_by: input.userId },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'MANAGER_PIN_SET',
+        entity_type: 'system_setting',
+        entity_id: 'manager_authorization_pin_hash',
+      },
+    });
+    return { ok: true };
+  }
+
+  async verifyManagerPin(pin: string): Promise<boolean> {
+    const row = await this.prisma.systemSetting.findUnique({
+      where: { key: 'manager_authorization_pin_hash' },
+    });
+    if (!row?.value?.startsWith('scrypt:')) return false;
+    const [, salt, hash] = row.value.split(':');
+    const { scryptSync, timingSafeEqual } = await import('node:crypto');
+    const derived = scryptSync(String(pin), salt, 64);
+    const expected = Buffer.from(hash, 'hex');
+    if (derived.length !== expected.length) return false;
+    return timingSafeEqual(derived, expected);
+  }
+
   async createSupplier(input: {
     name: string;
     contactPerson?: string;

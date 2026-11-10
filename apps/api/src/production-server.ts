@@ -402,6 +402,14 @@ const server = createServer(async (req, res) => {
       assertPermission(s.role, 'orders:void');
       const id = path.split('/')[2];
       const body = await readBody(req);
+      if (!body.reason?.trim()) return json(req, res, 400, { error: 'Void reason is required' });
+      // Manager PIN required unless actor is ADMINISTRATOR
+      if (s.role !== 'ADMINISTRATOR') {
+        if (!body.managerPin) return json(req, res, 403, { error: 'Manager PIN required to void' });
+        if (!useDurable || !catalogRepo) return json(req, res, 501, { error: 'Manager PIN verification requires PostgreSQL' });
+        const ok = await catalogRepo.verifyManagerPin(String(body.managerPin));
+        if (!ok) return json(req, res, 403, { error: 'Invalid manager PIN' });
+      }
       if (useDurable && orderRepo) return json(req, res, 200, await orderRepo.voidOrder(id, body.reason, s.userId));
       return json(req, res, 200, store.voidOrder(id, body.reason, s.userId));
     }
@@ -480,6 +488,72 @@ const server = createServer(async (req, res) => {
         return json(req, res, 200, order);
       }
       return json(req, res, 404, { error: 'Order not found' });
+    }
+    if (req.method === 'POST' && path === '/users') {
+      const s = await auth(req);
+      assertPermission(s.role, 'users:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.createUser({
+          fullName: body.fullName,
+          email: body.email,
+          password: body.password,
+          role: body.role,
+          phone: body.phone,
+          actorId: s.userId,
+          actorRole: s.role,
+        }));
+      }
+      return json(req, res, 501, { error: 'User create requires PostgreSQL' });
+    }
+    if (req.method === 'POST' && path.startsWith('/users/') && path.endsWith('/status')) {
+      const s = await auth(req);
+      assertPermission(s.role, 'users:write');
+      const id = path.split('/')[2];
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.setUserActive({
+          userId: id,
+          isActive: Boolean(body.isActive),
+          actorId: s.userId,
+          actorRole: s.role,
+        }));
+      }
+      return json(req, res, 501, { error: 'User status requires PostgreSQL' });
+    }
+    if (req.method === 'GET' && path === '/order-types') {
+      const s = await auth(req);
+      assertPermission(s.role, 'settings:read');
+      if (useDurable && catalogRepo) return json(req, res, 200, await catalogRepo.listOrderTypes());
+      return json(req, res, 200, []);
+    }
+    if (req.method === 'POST' && path === '/order-types') {
+      const s = await auth(req);
+      assertPermission(s.role, 'settings:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.upsertOrderType({ ...body, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Order types require PostgreSQL' });
+    }
+    if (req.method === 'PUT' && path.startsWith('/order-types/')) {
+      const s = await auth(req);
+      assertPermission(s.role, 'settings:write');
+      const id = path.split('/')[2];
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.upsertOrderType({ ...body, id, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Order types require PostgreSQL' });
+    }
+    if (req.method === 'PUT' && path === '/settings/manager-pin') {
+      const s = await auth(req);
+      if (s.role !== 'ADMINISTRATOR') return json(req, res, 403, { error: 'Only administrators can set manager PIN' });
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.setManagerPin({ pin: body.pin, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Manager PIN requires PostgreSQL' });
     }
     if (req.method === 'POST' && path === '/products') {
       const s = await auth(req);

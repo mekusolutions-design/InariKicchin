@@ -6,75 +6,64 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { getStoredUser } from "@/lib/auth";
 
-type Tab = "modules" | "vat" | "receipt" | "payment" | "users" | "orders";
+type Tab = "modules" | "vat" | "receipt" | "payment" | "users" | "orders" | "security";
 
 const MODULE_KEYS: Array<{ key: string; label: string; effect: string }> = [
-  {
-    key: "module_dine_pickup_delivery",
-    label: "Dine In / Pick Up / Delivery tabs",
-    effect: "Controls which order types appear on POS",
-  },
-  {
-    key: "module_table_number",
-    label: "Table number",
-    effect: "Show table field on Dine In orders",
-  },
-  {
-    key: "module_kitchen_tickets",
-    label: "Kitchen tickets",
-    effect: "Create kitchen tickets on complete",
-  },
-  {
-    key: "module_print_receipt",
-    label: "Print receipt",
-    effect: "Show print actions after order",
-  },
-  {
-    key: "module_discounts",
-    label: "Discounts",
-    effect: "Allow discount entry on POS",
-  },
-  {
-    key: "module_makeline_deductions",
-    label: "Makeline recipe deductions",
-    effect: "Deduct purchased stock on production (when recipes exist)",
-  },
-  {
-    key: "module_low_stock_alerts",
-    label: "Low-stock alerts",
-    effect: "Show low-stock on dashboard",
-  },
+  { key: "module_dine_pickup_delivery", label: "Dine In / Pick Up / Delivery tabs", effect: "Order type visibility on POS" },
+  { key: "module_table_number", label: "Table number", effect: "Show table field on Dine In" },
+  { key: "module_kitchen_tickets", label: "Kitchen tickets", effect: "Create tickets on complete" },
+  { key: "module_print_receipt", label: "Print receipt", effect: "Show print / receipt link" },
+  { key: "module_discounts", label: "Discounts", effect: "Allow discount entry on POS" },
+  { key: "module_makeline_deductions", label: "Makeline recipe deductions", effect: "When recipes exist" },
+  { key: "module_low_stock_alerts", label: "Low-stock alerts", effect: "Dashboard low-stock" },
 ];
+
+interface OrderTypeRow {
+  id: string;
+  name: string;
+  isDelivery: boolean;
+  requiresReference: boolean;
+  isActive: boolean;
+  sortOrder?: number;
+}
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("modules");
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [meta, setMeta] = useState<{
-    vat?: { ratePercent: number; pricesIncludeVat: boolean; enabled?: boolean };
-    users?: Array<{ fullName: string; email: string; role: string }>;
-    orderTypes?: Array<{ name: string }>;
-    paymentMethods?: string[];
+    vat?: { ratePercent: number; pricesIncludeVat: boolean };
+    users?: Array<{ id?: string; fullName: string; email: string; role: string; isActive?: boolean }>;
   } | null>(null);
+  const [orderTypes, setOrderTypes] = useState<OrderTypeRow[]>([]);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
   const role = getStoredUser()?.role;
-
-  const canWrite =
-    role === "ADMINISTRATOR" || role === "MANAGER";
+  const canWrite = role === "ADMINISTRATOR" || role === "MANAGER";
   const canUsers = role === "ADMINISTRATOR";
+
+  const [otName, setOtName] = useState("");
+  const [otDelivery, setOtDelivery] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [newRole, setNewRole] = useState("CASHIER");
+  const [managerPin, setManagerPin] = useState("");
+  const [managerPin2, setManagerPin2] = useState("");
 
   async function load() {
     try {
-      const [s, m] = await Promise.all([
+      const [s, m, ot] = await Promise.all([
         api<Record<string, string>>("/settings").catch(() => ({})),
         api<typeof meta>("/meta").catch(() => null),
+        api<OrderTypeRow[]>("/order-types").catch(() => [] as OrderTypeRow[]),
       ]);
       setSettings(s);
       setMeta(m);
+      setOrderTypes(ot);
       setError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load settings");
+      setError(e instanceof Error ? e.message : "Failed to load");
     }
   }
 
@@ -87,10 +76,7 @@ export default function SettingsPage() {
   }
 
   async function saveSettings() {
-    if (!canWrite) {
-      setError("You do not have permission to update settings");
-      return;
-    }
+    if (!canWrite) return;
     setSaving(true);
     setMsg("");
     setError("");
@@ -108,14 +94,84 @@ export default function SettingsPage() {
     }
   }
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "modules", label: "Modules" },
-    { id: "vat", label: "VAT" },
-    { id: "receipt", label: "Receipt" },
-    { id: "payment", label: "Payment details" },
-    { id: "users", label: "Users" },
-    { id: "orders", label: "Order types" },
-  ];
+  async function createUser(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setMsg("");
+    try {
+      await api("/users", {
+        method: "POST",
+        body: JSON.stringify({ fullName, email, password, role: newRole }),
+      });
+      setMsg("User created");
+      setFullName("");
+      setEmail("");
+      setPassword("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Create failed");
+    }
+  }
+
+  async function saveOrderType(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    try {
+      await api("/order-types", {
+        method: "POST",
+        body: JSON.stringify({
+          name: otName,
+          isDelivery: otDelivery,
+          requiresReference: otDelivery,
+          isActive: true,
+        }),
+      });
+      setMsg("Order type saved");
+      setOtName("");
+      setOtDelivery(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Order type failed");
+    }
+  }
+
+  async function toggleOrderType(ot: OrderTypeRow) {
+    try {
+      await api(`/order-types/${ot.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: ot.name,
+          isDelivery: ot.isDelivery,
+          requiresReference: ot.requiresReference,
+          isActive: !ot.isActive,
+          sortOrder: ot.sortOrder ?? 0,
+        }),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update failed");
+    }
+  }
+
+  async function saveManagerPin(e: React.FormEvent) {
+    e.preventDefault();
+    if (managerPin !== managerPin2) {
+      setError("PIN confirmation does not match");
+      return;
+    }
+    setError("");
+    try {
+      await api("/settings/manager-pin", {
+        method: "PUT",
+        body: JSON.stringify({ pin: managerPin }),
+      });
+      setMsg("Manager authorization PIN set");
+      setManagerPin("");
+      setManagerPin2("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PIN save failed");
+    }
+  }
 
   if (role === "CASHIER" || role === "KITCHEN_STAFF") {
     return (
@@ -128,15 +184,24 @@ export default function SettingsPage() {
     );
   }
 
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "modules", label: "Modules" },
+    { id: "vat", label: "VAT" },
+    { id: "receipt", label: "Receipt" },
+    { id: "payment", label: "Payment" },
+    { id: "users", label: "Users" },
+    { id: "orders", label: "Order types" },
+    { id: "security", label: "Security" },
+  ];
+
   return (
     <div className="space-y-5">
       <div>
         <h1 className="page-title">Settings</h1>
         <p className="page-sub">
-          POS modules, VAT, receipt & payment configuration · audited changes
+          Modules, VAT, receipt, payment, users, order types · audited
         </p>
       </div>
-
       {error ? <p className="text-sm text-danger">{error}</p> : null}
       {msg ? <p className="text-sm text-success">{msg}</p> : null}
 
@@ -146,10 +211,10 @@ export default function SettingsPage() {
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
-            className={`rounded-t-lg px-4 py-2.5 text-sm font-semibold transition ${
+            className={`rounded-t-lg px-3 py-2.5 text-sm font-semibold ${
               tab === t.id
                 ? "border border-b-0 border-border bg-surface text-primary"
-                : "text-ink-muted hover:text-ink"
+                : "text-ink-muted"
             }`}
           >
             {t.label}
@@ -158,13 +223,9 @@ export default function SettingsPage() {
       </div>
 
       {tab === "modules" && (
-        <div className="panel space-y-3 max-w-2xl">
-          <h3 className="text-[0.95rem] font-semibold">POS module switches</h3>
+        <div className="panel max-w-2xl space-y-3">
           {MODULE_KEYS.map((m) => (
-            <label
-              key={m.key}
-              className="flex items-start gap-3 rounded-lg border border-border p-3"
-            >
+            <label key={m.key} className="flex items-start gap-3 rounded-lg border border-border p-3">
               <input
                 type="checkbox"
                 className="mt-1"
@@ -179,7 +240,7 @@ export default function SettingsPage() {
             </label>
           ))}
           {canWrite ? (
-            <Button onClick={saveSettings} disabled={saving} className="min-h-11">
+            <Button onClick={saveSettings} disabled={saving}>
               {saving ? "Saving…" : "Save modules"}
             </Button>
           ) : null}
@@ -187,25 +248,19 @@ export default function SettingsPage() {
       )}
 
       {tab === "vat" && (
-        <div className="panel max-w-lg space-y-3">
-          <h3 className="text-[0.95rem] font-semibold">VAT</h3>
-          <p className="text-sm text-ink-muted">
-            Current rate from database:{" "}
-            <strong>{meta?.vat?.ratePercent ?? 16}%</strong>
-            {meta?.vat?.pricesIncludeVat ? " · prices include VAT" : ""}
+        <div className="panel max-w-lg text-sm">
+          <p>
+            Rate: <strong>{meta?.vat?.ratePercent ?? 16}%</strong>
+            {meta?.vat?.pricesIncludeVat ? " · inclusive" : ""}
           </p>
-          <p className="text-xs text-ink-muted">
-            Changing VAT rate uses an effective-from history row so past orders
-            are not rewritten. Use the API{" "}
-            <code>PUT /settings/vat</code> when that route is deployed, or
-            update VatSetting via admin process.
+          <p className="mt-2 text-xs text-ink-muted">
+            Historical orders keep their VAT snapshot; changing rate creates a new effective-from row when VAT write API is used.
           </p>
         </div>
       )}
 
       {tab === "receipt" && (
         <div className="panel max-w-lg space-y-3">
-          <h3 className="text-[0.95rem] font-semibold">Receipt header</h3>
           {(
             [
               ["receipt_business_name", "Business name"],
@@ -248,8 +303,8 @@ export default function SettingsPage() {
             </select>
           </div>
           {canWrite ? (
-            <Button onClick={saveSettings} disabled={saving} className="min-h-11">
-              {saving ? "Saving…" : "Save receipt settings"}
+            <Button onClick={saveSettings} disabled={saving}>
+              Save receipt settings
             </Button>
           ) : null}
         </div>
@@ -257,16 +312,13 @@ export default function SettingsPage() {
 
       {tab === "payment" && (
         <div className="panel max-w-lg space-y-3">
-          <h3 className="text-[0.95rem] font-semibold">
-            Payment box (in-house receipts)
-          </h3>
           {(
             [
               ["paybill_business_number", "Paybill business number"],
               ["paybill_till_number", "Till number"],
               ["bank_name", "Bank name"],
               ["bank_account", "Bank account"],
-              ["payment_instruction", "Custom payment instruction"],
+              ["payment_instruction", "Payment instruction"],
             ] as const
           ).map(([key, label]) => (
             <div key={key}>
@@ -279,21 +331,6 @@ export default function SettingsPage() {
               />
             </div>
           ))}
-          <div>
-            <label className="field-label">Account format</label>
-            <select
-              className="field-input"
-              value={settings.paybill_account_format ?? "ORDER"}
-              disabled={!canWrite}
-              onChange={(e) =>
-                setKey("paybill_account_format", e.target.value)
-              }
-            >
-              <option value="ORDER">Order number</option>
-              <option value="TABLE">Table number</option>
-              <option value="FIXED">Fixed text</option>
-            </select>
-          </div>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -306,62 +343,174 @@ export default function SettingsPage() {
             Print payment box on in-house receipts
           </label>
           {canWrite ? (
-            <Button onClick={saveSettings} disabled={saving} className="min-h-11">
-              {saving ? "Saving…" : "Save payment details"}
+            <Button onClick={saveSettings} disabled={saving}>
+              Save payment details
             </Button>
           ) : null}
         </div>
       )}
 
       {tab === "users" && (
-        <div className="panel overflow-x-auto">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">Users</h3>
-          {!canUsers ? (
-            <p className="text-sm text-ink-muted">
-              Only administrators manage users.
-            </p>
-          ) : null}
-          <table className="table-base min-w-[400px]">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Role</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(meta?.users ?? []).map((u) => (
-                <tr key={u.email}>
-                  <td className="font-medium">{u.fullName}</td>
-                  <td className="text-ink-muted">{u.email}</td>
-                  <td>
-                    <Badge tone="info">{u.role}</Badge>
-                  </td>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="panel overflow-x-auto">
+            <h3 className="mb-3 text-[0.95rem] font-semibold">Users</h3>
+            <table className="table-base min-w-[360px]">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(meta?.users ?? []).map((u) => (
+                  <tr key={u.email}>
+                    <td className="font-medium">{u.fullName}</td>
+                    <td className="text-ink-muted text-sm">{u.email}</td>
+                    <td>
+                      <Badge tone="info">{u.role}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {canUsers ? (
+            <form onSubmit={createUser} className="panel space-y-3">
+              <h3 className="text-[0.95rem] font-semibold">Create user</h3>
+              <input
+                className="field-input"
+                placeholder="Full name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                required
+              />
+              <input
+                className="field-input"
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <input
+                className="field-input"
+                type="password"
+                placeholder="Password (min 8)"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+              <select
+                className="field-input"
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value)}
+              >
+                <option value="CASHIER">CASHIER</option>
+                <option value="MANAGER">MANAGER</option>
+                <option value="KITCHEN_STAFF">KITCHEN_STAFF</option>
+                <option value="ADMINISTRATOR">ADMINISTRATOR</option>
+              </select>
+              <Button type="submit">Create user</Button>
+            </form>
+          ) : (
+            <p className="text-sm text-ink-muted">Only administrators create users.</p>
+          )}
         </div>
       )}
 
       {tab === "orders" && (
-        <div className="panel max-w-lg">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">Order types</h3>
-          <ul className="space-y-2">
-            {(meta?.orderTypes ?? []).map((t) => (
-              <li
-                key={t.name}
-                className="flex justify-between rounded-lg border border-border px-3 py-2 text-sm"
-              >
-                <span className="font-medium">{t.name}</span>
-                <Badge tone="ok">Active</Badge>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-xs text-ink-muted">
-            Add/edit order types via database seed or future order-type manager
-            API. Kind (in-house vs delivery) drives POS payment behaviour.
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="panel">
+            <h3 className="mb-3 text-[0.95rem] font-semibold">Order types</h3>
+            <ul className="space-y-2">
+              {orderTypes.map((ot) => (
+                <li
+                  key={ot.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm"
+                >
+                  <span>
+                    <span className="font-medium">{ot.name}</span>
+                    <span className="ml-2 text-xs text-ink-muted">
+                      {ot.isDelivery ? "Delivery" : "In-house"}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <Badge tone={ot.isActive ? "ok" : "warn"}>
+                      {ot.isActive ? "Active" : "Inactive"}
+                    </Badge>
+                    {canWrite ? (
+                      <Button
+                        variant="secondary"
+                        className="min-h-8 text-xs"
+                        onClick={() => toggleOrderType(ot)}
+                      >
+                        {ot.isActive ? "Deactivate" : "Activate"}
+                      </Button>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          {canWrite ? (
+            <form onSubmit={saveOrderType} className="panel space-y-3">
+              <h3 className="text-[0.95rem] font-semibold">Add order type</h3>
+              <input
+                className="field-input"
+                placeholder="Name e.g. Glovo"
+                value={otName}
+                onChange={(e) => setOtName(e.target.value)}
+                required
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={otDelivery}
+                  onChange={(e) => setOtDelivery(e.target.checked)}
+                />
+                Delivery platform (requires platform order code on POS)
+              </label>
+              <Button type="submit">Save order type</Button>
+            </form>
+          ) : null}
+        </div>
+      )}
+
+      {tab === "security" && (
+        <div className="panel max-w-md space-y-3">
+          <h3 className="text-[0.95rem] font-semibold">Manager authorization PIN</h3>
+          <p className="text-xs text-ink-muted">
+            Required for voids by non-administrators. Stored as a scrypt hash in
+            SystemSetting. Only administrators can set it.
           </p>
+          {role === "ADMINISTRATOR" ? (
+            <form onSubmit={saveManagerPin} className="space-y-3">
+              <input
+                className="field-input"
+                type="password"
+                inputMode="numeric"
+                placeholder="New PIN (4–8 digits)"
+                value={managerPin}
+                onChange={(e) => setManagerPin(e.target.value)}
+                pattern="\d{4,8}"
+                required
+              />
+              <input
+                className="field-input"
+                type="password"
+                inputMode="numeric"
+                placeholder="Confirm PIN"
+                value={managerPin2}
+                onChange={(e) => setManagerPin2(e.target.value)}
+                required
+              />
+              <Button type="submit">Set manager PIN</Button>
+            </form>
+          ) : (
+            <p className="text-sm text-ink-muted">Only administrators can set the PIN.</p>
+          )}
         </div>
       )}
     </div>
