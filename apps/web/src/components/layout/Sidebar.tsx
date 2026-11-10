@@ -2,11 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { NAV_SECTIONS } from "@/lib/nav";
+import { navForRole } from "@/lib/nav";
+import { getStoredUser, type Role } from "@/lib/auth";
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const [role, setRole] = useState<Role | null>(null);
+
+  useEffect(() => {
+    setRole(getStoredUser()?.role ?? null);
+  }, []);
+
+  const items = navForRole(role);
 
   return (
     <aside className="flex h-full min-h-screen w-60 flex-col bg-navy px-3 py-4 text-slate-200">
@@ -24,7 +33,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto">
-        {NAV_SECTIONS.map((item) => {
+        {items.map((item) => {
           const active =
             pathname === item.href || pathname.startsWith(item.href + "/");
           return (

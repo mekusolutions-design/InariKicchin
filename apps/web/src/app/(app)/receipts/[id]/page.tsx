@@ -9,12 +9,14 @@ interface Order {
   id: string;
   orderNo: string;
   orderType: string;
+  tableNo?: string;
   platformReference?: string;
   subtotal: number;
   vatAmount: number;
   totalAmount: number;
   createdAt: string;
   status: string;
+  cashierName?: string;
   lines: Array<{
     name: string;
     quantity: number;
@@ -63,6 +65,13 @@ export default function ReceiptPage() {
   const isDelivery = (order.payments || []).some((p) =>
     String(p.method).startsWith("Platform"),
   );
+  const vatEnabled = settings.vat_enabled !== "0";
+  const netOfVat = order.totalAmount - (order.vatAmount || 0);
+  const accountFormat = settings.paybill_account_format || "ORDER";
+  const accountNo =
+    accountFormat === "TABLE" && order.tableNo
+      ? order.tableNo
+      : order.orderNo;
 
   return (
     <div className="mx-auto max-w-md space-y-4 p-4 print:p-0">
@@ -75,12 +84,25 @@ export default function ReceiptPage() {
         >
           Print receipt
         </Button>
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setDuplicate(false);
+            setTimeout(() => window.print(), 50);
+          }}
+        >
+          Print original
+        </Button>
         <Button variant="secondary" onClick={() => window.history.back()}>
           Back
         </Button>
       </div>
 
-      <article className="rounded-lg border border-border bg-white p-4 text-sm shadow-sm print:border-0 print:shadow-none">
+      <article
+        className={`rounded-lg border border-border bg-white p-4 text-sm shadow-sm print:border-0 print:shadow-none ${
+          settings.receipt_paper_width === "58" ? "max-w-[220px]" : ""
+        }`}
+      >
         {duplicate ? (
           <div className="mb-2 text-center text-xs font-bold tracking-widest">
             *** DUPLICATE ***
@@ -99,25 +121,46 @@ export default function ReceiptPage() {
           {settings.receipt_kra_pin ? (
             <div className="text-xs">KRA PIN: {settings.receipt_kra_pin}</div>
           ) : null}
+          {settings.receipt_vat_number ? (
+            <div className="text-xs">VAT: {settings.receipt_vat_number}</div>
+          ) : null}
         </header>
 
-        <div className="mb-2 space-y-0.5 text-xs">
+        <div className="mb-2 space-y-0.5 border-b border-dashed border-border pb-2 text-xs">
           <div className="flex justify-between">
             <span>Receipt</span>
             <span className="font-semibold">{order.orderNo}</span>
           </div>
           <div className="flex justify-between">
             <span>Date</span>
-            <span>{(order.createdAt || "").slice(0, 19).replace("T", " ")}</span>
+            <span>
+              {order.createdAt
+                ? new Date(order.createdAt).toLocaleString("en-KE", {
+                    timeZone: "Africa/Nairobi",
+                  })
+                : "—"}
+            </span>
           </div>
           <div className="flex justify-between">
             <span>Type</span>
             <span>{order.orderType}</span>
           </div>
+          {order.tableNo ? (
+            <div className="flex justify-between">
+              <span>Table</span>
+              <span>{order.tableNo}</span>
+            </div>
+          ) : null}
           {order.platformReference ? (
             <div className="flex justify-between">
               <span>Platform code</span>
               <span>{order.platformReference}</span>
+            </div>
+          ) : null}
+          {order.cashierName ? (
+            <div className="flex justify-between">
+              <span>Cashier</span>
+              <span>{order.cashierName}</span>
             </div>
           ) : null}
         </div>
@@ -148,13 +191,23 @@ export default function ReceiptPage() {
 
         <div className="space-y-0.5 border-t border-dashed border-border pt-2 text-xs">
           <div className="flex justify-between">
-            <span>Subtotal</span>
-            <span>{money(order.subtotal)}</span>
+            <span>
+              Subtotal{vatEnabled ? " (VAT incl)" : ""}
+            </span>
+            <span>{money(order.subtotal || order.totalAmount)}</span>
           </div>
-          <div className="flex justify-between">
-            <span>VAT</span>
-            <span>{money(order.vatAmount)}</span>
-          </div>
+          {vatEnabled ? (
+            <>
+              <div className="flex justify-between">
+                <span>Net of VAT</span>
+                <span>{money(netOfVat)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>VAT</span>
+                <span>{money(order.vatAmount)}</span>
+              </div>
+            </>
+          ) : null}
           <div className="flex justify-between text-sm font-bold">
             <span>TOTAL</span>
             <span>{money(order.totalAmount)}</span>
@@ -164,7 +217,7 @@ export default function ReceiptPage() {
         <div className="mt-2 space-y-0.5 text-xs">
           {(order.payments || []).map((p, i) => (
             <div key={i} className="flex justify-between">
-              <span>{p.method}</span>
+              <span>Paid: {p.method}</span>
               <span>
                 {money(p.amount)}
                 {p.reference ? ` · ${p.reference}` : ""}
@@ -175,12 +228,13 @@ export default function ReceiptPage() {
 
         {!isDelivery && settings.print_payment_box !== "0" ? (
           <div className="mt-3 border border-dashed border-border p-2 text-xs">
-            <div className="font-semibold">Pay via</div>
+            <div className="font-semibold">PAY VIA M-PESA PAYBILL</div>
             {settings.paybill_business_number ? (
-              <div>Paybill: {settings.paybill_business_number}</div>
+              <div>Business No: {settings.paybill_business_number}</div>
             ) : (
               <div className="text-ink-muted">Configure paybill in Settings</div>
             )}
+            <div>Account No: {accountNo}</div>
             {settings.paybill_till_number ? (
               <div>Till: {settings.paybill_till_number}</div>
             ) : null}

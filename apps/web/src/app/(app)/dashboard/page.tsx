@@ -26,10 +26,17 @@ const HOUR_LABELS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
+  const [showLowStock, setShowLowStock] = useState(true);
 
   useEffect(() => {
-    api<DashboardData>("/dashboard")
-      .then(setData)
+    Promise.all([
+      api<DashboardData>("/dashboard"),
+      api<Record<string, string>>("/settings").catch(() => ({})),
+    ])
+      .then(([d, s]) => {
+        setData(d);
+        setShowLowStock(s.module_low_stock_alerts !== "0");
+      })
       .catch((e) => setError(e.message));
   }, []);
 
@@ -64,21 +71,11 @@ export default function DashboardPage() {
     );
   }
 
-  // Placeholder chart data when API does not yet return series
-  const hourValues =
-    data.salesByHour?.map((h) => h.value) ??
-    [3.2, 5.1, 11.8, 14.5, 8.2, 4.6, 3.9, 5.8, 7.9, 9.4, 7.6, 4.5];
+  // Only show chart series when the API returns real data — never invent sales.
+  const hourValues = data.salesByHour?.map((h) => h.value) ?? [];
   const maxHour = Math.max(...hourValues, 1);
 
-  const orderTypeRows =
-    data.salesByOrderType ??
-    [
-      { type: "Dine In", value: Math.round(data.todaySales * 0.48) },
-      { type: "Glovo", value: Math.round(data.todaySales * 0.17) },
-      { type: "Pick Up", value: Math.round(data.todaySales * 0.11) },
-      { type: "Bolt Food", value: Math.round(data.todaySales * 0.1) },
-      { type: "Uber Eats", value: Math.round(data.todaySales * 0.08) },
-    ];
+  const orderTypeRows = data.salesByOrderType ?? [];
   const maxOrderType = Math.max(...orderTypeRows.map((r) => r.value), 1);
 
   return (
@@ -222,7 +219,13 @@ export default function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {(data.lowStock || []).length === 0 ? (
+              {!showLowStock ? (
+                <tr>
+                  <td colSpan={3} className="py-3 text-ink-muted">
+                    Low-stock alerts disabled in Settings.
+                  </td>
+                </tr>
+              ) : (data.lowStock || []).length === 0 ? (
                 <tr>
                   <td colSpan={3} className="py-3 text-ink-muted">
                     All stock above minimum levels

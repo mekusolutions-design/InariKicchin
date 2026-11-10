@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { API_URL } from "@/lib/api";
 import { saveSession, type LoginResponse } from "@/lib/auth";
+import { homePathForRole } from "@/lib/nav";
 import { Button } from "@/components/ui/Button";
 
 export default function LoginPage() {
@@ -26,7 +27,7 @@ export default function LoginPage() {
       const data = (await res.json()) as LoginResponse & { error?: string };
       if (!res.ok) throw new Error(data.error || "Login failed");
       saveSession(data);
-      router.replace("/dashboard");
+      router.replace(homePathForRole(data.user?.role));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

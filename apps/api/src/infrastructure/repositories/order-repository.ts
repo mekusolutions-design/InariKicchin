@@ -52,9 +52,35 @@ export class OrderRepository {
         throw new Error('Delivery platform reference is required for this order type');
       }
 
-      const vatSetting = await tx.vatSetting.findFirst({ orderBy: { effective_from: 'desc' } });
-      const vatRatePercent = vatSetting ? Number(vatSetting.rate_percent) : 16;
-      const vatMode: VatMode = vatSetting?.prices_include_vat ? 'INCLUSIVE' : 'EXCLUSIVE';
+      const [vatSetting, systemSettings] = await Promise.all([
+        tx.vatSetting.findFirst({ orderBy: { effective_from: 'desc' } }),
+        tx.systemSetting.findMany({
+          where: { key: { in: ['vat_enabled', 'vat_rate', 'vat_inclusive', 'module_kitchen_tickets', 'module_discounts'] } },
+        }),
+      ]);
+      const sMap: Record<string, string> = {};
+      for (const r of systemSettings) sMap[r.key] = r.value;
+      const vatEnabled = sMap.vat_enabled !== '0';
+      const rateFromSettings = sMap.vat_rate ? Number(sMap.vat_rate) : NaN;
+      const vatRatePercent = Number.isFinite(rateFromSettings)
+        ? rateFromSettings
+        : vatSetting
+          ? Number(vatSetting.rate_percent)
+          : 16;
+      const pricesInclude =
+        sMap.vat_inclusive !== undefined
+          ? sMap.vat_inclusive !== '0'
+          : vatSetting
+            ? vatSetting.prices_include_vat
+            : true;
+      const vatMode: VatMode = !vatEnabled
+        ? 'EXCLUSIVE'
+        : pricesInclude
+          ? 'INCLUSIVE'
+          : 'EXCLUSIVE';
+      const effectiveVatRate = vatEnabled ? vatRatePercent : 0;
+      const kitchenTicketsOn = sMap.module_kitchen_tickets !== '0';
+      const discountsOn = sMap.module_discounts === '1';
 
       if (!input.lines?.length) throw new Error('Order must contain at least one line');
 
@@ -71,7 +97,7 @@ export class OrderRepository {
 
         const unitPrice = line.unitPrice ?? Number(menuItem.price);
         const lineGross = unitPrice * line.quantity;
-        const vat = lineVat(lineGross, vatRatePercent, vatMode);
+        const vat = lineVat(lineGross, effectiveVatRate, vatMode);
         subtotal = subtotal.plus(vat.net);
         vatTotal = vatTotal.plus(vat.vat);
 
@@ -87,8 +113,11 @@ export class OrderRepository {
         });
       }
 
-      const discount = d(input.discountAmount ?? 0);
+      let discount = d(input.discountAmount ?? 0);
       if (discount.lt(0)) throw new Error('Discount cannot be negative');
+      if (!discountsOn && discount.gt(0)) {
+        throw new Error('Discounts are disabled in Settings');
+      }
       const grand = subtotal.plus(vatTotal).minus(discount);
       if (grand.lt(0)) throw new Error('Order total cannot be negative after discount');
 
@@ -128,14 +157,14 @@ export class OrderRepository {
           vat_total: vatTotal,
           grand_total: grand,
           vat_mode: vatMode,
-          vat_rate: d(vatRatePercent / 100),
+          vat_rate: d(effectiveVatRate / 100),
           cashier_id: input.cashierId,
           idempotency_key: input.idempotencyKey,
           lines: { create: lineCreates },
           payments: paymentCreates.length ? { create: paymentCreates } : undefined,
-          kitchen_tickets: {
-            create: { ticket_no: ticketNo, status: 'NEW' },
-          },
+          kitchen_tickets: kitchenTicketsOn
+            ? { create: { ticket_no: ticketNo, status: 'NEW' } }
+            : undefined,
         },
         include: { lines: true, payments: true, kitchen_tickets: true },
       });
@@ -192,6 +221,15 @@ export class OrderRepository {
       if (!ticket) throw new Error('Kitchen ticket not found');
 
       const current = ticket.status;
+      // Idempotent: already in the requested final state is success (avoids SERVED→SERVED errors from stale UI)
+      if (current === status && (status === 'SERVED' || status === 'COLLECTED' || status === 'CANCELLED')) {
+        return {
+          id: ticket.id,
+          orderId: ticket.order_id,
+          status: ticket.status,
+          ticketNo: ticket.ticket_no,
+        };
+      }
       if (!allowed[current]?.includes(status)) {
         throw new Error(`Invalid kitchen transition: ${current} → ${status}`);
       }

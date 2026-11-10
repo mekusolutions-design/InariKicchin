@@ -26,19 +26,36 @@ interface Ticket {
   createdAt?: string;
 }
 
+function isInHouse(orderType?: string): boolean {
+  if (!orderType) return true;
+  const t = orderType.toLowerCase();
+  return t === "dine in" || t === "dine-in" || t === "pickup" || t === "pick up" || t === "pick-up";
+}
+
+function finalStatusFor(orderType?: string): "SERVED" | "COLLECTED" {
+  if (!orderType) return "SERVED";
+  const t = orderType.toLowerCase();
+  if (t.includes("pick")) return "COLLECTED";
+  if (t === "dine in" || t === "dine-in") return "SERVED";
+  // Delivery platforms typically treat as collected once ready / handed off
+  return "COLLECTED";
+}
+
 export default function KitchenTicketsPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState("");
 
   const load = useCallback(() => {
     Promise.all([api<Ticket[]>("/kitchen/tickets"), api<Order[]>("/orders")])
       .then(([t, o]) => {
-        setTickets(t);
-        setOrders(o);
+        setTickets(Array.isArray(t) ? t : []);
+        setOrders(Array.isArray(o) ? o : []);
+        setError("");
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, []);
 
   useEffect(() => {
@@ -48,15 +65,35 @@ export default function KitchenTicketsPage() {
   }, [load]);
 
   async function advance(id: string, status: string) {
+    if (busy) return;
     setBusy(id);
+    setError("");
+    setSuccessMsg("");
     try {
       await api(`/kitchen/tickets/${id}/status`, {
         method: "POST",
         body: JSON.stringify({ status }),
       });
+      // Optimistic local update so button disappears immediately
+      setTickets((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, status } : t)),
+      );
+      setSuccessMsg(`Ticket updated to ${status}`);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Update failed");
+      const msg = e instanceof Error ? e.message : "Update failed";
+      // If already in final state, treat as success (idempotent)
+      if (msg.includes("Invalid kitchen transition") && (msg.includes("SERVED") || msg.includes("COLLECTED"))) {
+        setTickets((prev) =>
+          prev.map((t) =>
+            t.id === id ? { ...t, status: status as Ticket["status"] } : t,
+          ),
+        );
+        setSuccessMsg("Ticket already completed");
+        await load();
+      } else {
+        setError(msg);
+      }
     } finally {
       setBusy(null);
     }
@@ -67,6 +104,9 @@ export default function KitchenTicketsPage() {
       <div>
         <h1 className="page-title">Kitchen Tickets</h1>
         <p className="mt-2 text-danger">{error}</p>
+        <Button className="mt-3" onClick={load}>
+          Retry
+        </Button>
       </div>
     );
   }
@@ -79,15 +119,14 @@ export default function KitchenTicketsPage() {
   for (const t of tickets) {
     if (t.status === "NEW") cols.NEW.push(t);
     else if (t.status === "PREPARING") cols.PREPARING.push(t);
-    else if (["READY", "SERVED", "COLLECTED"].includes(t.status))
-      cols.READY.push(t);
+    else if (t.status === "READY") cols.READY.push(t);
+    // SERVED / COLLECTED / CANCELLED intentionally excluded from active board
   }
 
   function column(
     title: string,
     list: Ticket[],
-    next: string | null,
-    label: string,
+    getNext: (t: Ticket, o?: Order) => { status: string; label: string } | null,
     success?: boolean,
   ) {
     return (
@@ -101,6 +140,7 @@ export default function KitchenTicketsPage() {
         ) : (
           list.map((t) => {
             const o = orders.find((x) => x.id === t.orderId);
+            const next = getNext(t, o);
             return (
               <div
                 key={t.id}
@@ -109,6 +149,7 @@ export default function KitchenTicketsPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <strong className="text-base">#{t.ticketNo}</strong>
                   <Badge tone="orange">{o?.orderType ?? "—"}</Badge>
+                  <Badge tone="neutral">{t.status}</Badge>
                 </div>
                 <div className="mt-1 text-xs text-ink-muted">
                   {o?.orderNo}
@@ -135,10 +176,10 @@ export default function KitchenTicketsPage() {
                   <Button
                     variant={success ? "success" : "primary"}
                     className="mt-3 w-full"
-                    disabled={busy === t.id}
-                    onClick={() => advance(t.id, next)}
+                    disabled={busy === t.id || busy !== null}
+                    onClick={() => advance(t.id, next.status)}
                   >
-                    {busy === t.id ? "Updating…" : label}
+                    {busy === t.id ? "Updating…" : next.label}
                   </Button>
                 ) : null}
               </div>
@@ -163,10 +204,28 @@ export default function KitchenTicketsPage() {
         </Button>
       </div>
       {error ? <p className="text-sm text-danger">{error}</p> : null}
+      {successMsg ? <p className="text-sm text-success">{successMsg}</p> : null}
       <div className="grid gap-3 md:grid-cols-3">
-        {column("New", cols.NEW, "PREPARING", "Start preparing")}
-        {column("Preparing", cols.PREPARING, "READY", "Mark ready")}
-        {column("Ready", cols.READY, "SERVED", "Served / Collected", true)}
+        {column("New", cols.NEW, () => ({
+          status: "PREPARING",
+          label: "Start preparing",
+        }))}
+        {column("Preparing", cols.PREPARING, () => ({
+          status: "READY",
+          label: "Mark ready",
+        }))}
+        {column(
+          "Ready",
+          cols.READY,
+          (_t, o) => {
+            const final = finalStatusFor(o?.orderType);
+            return {
+              status: final,
+              label: final === "SERVED" ? "Served" : "Collected",
+            };
+          },
+          true,
+        )}
       </div>
     </div>
   );

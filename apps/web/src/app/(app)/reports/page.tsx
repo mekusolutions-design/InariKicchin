@@ -72,7 +72,7 @@ function normalize(raw: SalesReportRaw): SalesReport {
 }
 
 export default function ReportsPage() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Nairobi" });
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [r, setR] = useState<SalesReport | null>(null);

@@ -5,6 +5,19 @@ import { api, money } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 
+interface ClosingItem {
+  itemType?: string;
+  name?: string;
+  unit?: string;
+  openingQty?: number;
+  receivedQty?: number;
+  wastageQty?: number;
+  availableQty?: number;
+  closingQty?: number;
+  usedQty?: number;
+  avgUnitCost?: number;
+  usedValue?: number;
+}
 interface Closing {
   closingNo: string;
   status: string;
@@ -12,7 +25,9 @@ interface Closing {
   totalValueWasted: number;
   submittedAt?: string;
   periodEnd?: string;
+  periodStart?: string;
   periodDate?: string;
+  items?: ClosingItem[];
 }
 
 export default function StockHistoryPage() {
@@ -30,6 +45,44 @@ export default function StockHistoryPage() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  function exportClosingCsv() {
+    if (!selected) return;
+    const headers = [
+      "name",
+      "itemType",
+      "unit",
+      "openingQty",
+      "receivedQty",
+      "wastageQty",
+      "closingQty",
+      "usedQty",
+      "usedValue",
+    ];
+    const lines = [headers.join(",")];
+    for (const it of selected.items || []) {
+      lines.push(
+        [
+          JSON.stringify(it.name ?? ""),
+          it.itemType ?? "",
+          it.unit ?? "",
+          it.openingQty ?? "",
+          it.receivedQty ?? "",
+          it.wastageQty ?? "",
+          it.closingQty ?? "",
+          it.usedQty ?? "",
+          it.usedValue ?? "",
+        ].join(","),
+      );
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `closing-${selected.closingNo}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   if (error) {
     return (
@@ -148,16 +201,17 @@ export default function StockHistoryPage() {
                     <Button
                       variant="secondary"
                       className="min-h-9 px-3 py-1.5"
-                      disabled
+                      onClick={exportClosingCsv}
+                      disabled={!selected?.items?.length}
                     >
-                      Export Excel
+                      Export CSV
                     </Button>
                     <Button
                       variant="secondary"
                       className="min-h-9 px-3 py-1.5"
-                      disabled
+                      onClick={() => window.print()}
                     >
-                      Export PDF
+                      Print / PDF
                     </Button>
                   </div>
                 </div>
@@ -175,11 +229,57 @@ export default function StockHistoryPage() {
                     <dd className="font-medium">Weighted average</dd>
                   </div>
                 </dl>
-                <p className="mt-4 rounded-lg bg-purple-soft px-3 py-2 text-xs text-[#5b21b6]">
-                  Snapshot is locked after submit. Corrections require authorised
-                  workflow. Line-level product movements appear when the API
-                  returns closing item detail.
-                </p>
+                {(selected.items || []).length > 0 ? (
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="table-base min-w-[640px]">
+                      <thead>
+                        <tr>
+                          <th>Item</th>
+                          <th>Type</th>
+                          <th className="text-right">Open</th>
+                          <th className="text-right">Recv</th>
+                          <th className="text-right">Waste</th>
+                          <th className="text-right">Close</th>
+                          <th className="text-right">Used</th>
+                          <th className="text-right">Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selected.items!.map((it, idx) => (
+                          <tr key={idx}>
+                            <td className="font-medium">
+                              {it.name || "—"}
+                              {it.unit ? (
+                                <span className="text-xs text-ink-muted">
+                                  {" "}
+                                  ({it.unit})
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className="text-ink-muted text-xs">
+                              {it.itemType || "—"}
+                            </td>
+                            <td className="num">{it.openingQty ?? "—"}</td>
+                            <td className="num">{it.receivedQty ?? "—"}</td>
+                            <td className="num">{it.wastageQty ?? "—"}</td>
+                            <td className="num">{it.closingQty ?? "—"}</td>
+                            <td className="num font-semibold">
+                              {it.usedQty ?? "—"}
+                            </td>
+                            <td className="num">
+                              {it.usedValue != null ? money(it.usedValue) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="mt-4 rounded-lg bg-purple-soft px-3 py-2 text-xs text-[#5b21b6]">
+                    Snapshot is locked after submit. Line items will appear when
+                    the closing session stored item detail.
+                  </p>
+                )}
               </div>
             </>
           ) : (

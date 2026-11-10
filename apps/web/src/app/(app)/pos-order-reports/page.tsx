@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { api, money } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { getStoredUser } from "@/lib/auth";
 
 interface PosReport {
   from: string;
@@ -49,6 +51,14 @@ export default function PosOrderReportsPage() {
   const [data, setData] = useState<PosReport | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [voidId, setVoidId] = useState<string | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidPin, setVoidPin] = useState("");
+  const [voidBusy, setVoidBusy] = useState(false);
+  const [voidMsg, setVoidMsg] = useState("");
+  const role = typeof window !== "undefined" ? getStoredUser()?.role : undefined;
+  const canVoid = role === "ADMINISTRATOR" || role === "MANAGER" || role === "CASHIER";
+
 
   async function load(f = from, t = to) {
     setLoading(true);
@@ -70,6 +80,58 @@ export default function PosOrderReportsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function exportCsv() {
+    try {
+      const token =
+        typeof window !== "undefined"
+          ? localStorage.getItem("INARI_TOKEN")
+          : null;
+      const base = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
+      // Prefer dedicated endpoint; fall back to client-built CSV from loaded data
+      const res = await fetch(
+        `${base}/reports/sales.csv?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      if (!res.ok) throw new Error("CSV export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pos-orders-${from}-to-${to}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    }
+  }
+
+  
+  async function submitVoid() {
+    if (!voidId) return;
+    setVoidBusy(true);
+    setVoidMsg("");
+    setError("");
+    try {
+      if (!voidReason.trim()) throw new Error("Void reason is required");
+      await api(`/orders/${voidId}/void`, {
+        method: "POST",
+        body: JSON.stringify({
+          reason: voidReason.trim(),
+          managerPin: role === "ADMINISTRATOR" ? undefined : voidPin || undefined,
+        }),
+      });
+      setVoidMsg("Order voided");
+      setVoidId(null);
+      setVoidReason("");
+      setVoidPin("");
+      await load(from, to);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Void failed");
+    } finally {
+      setVoidBusy(false);
+    }
+  }
 
   function preset(which: "today" | "yesterday") {
     const d = todayNairobi();
@@ -123,6 +185,9 @@ export default function PosOrderReportsPage() {
         </Button>
         <Button variant="secondary" onClick={() => preset("yesterday")}>
           Yesterday
+        </Button>
+        <Button variant="secondary" onClick={exportCsv} disabled={!data}>
+          Export CSV
         </Button>
       </div>
 
@@ -241,6 +306,7 @@ export default function PosOrderReportsPage() {
                   <th className="text-right">Total</th>
                   <th>Payment</th>
                   <th>Status</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -267,6 +333,28 @@ export default function PosOrderReportsPage() {
                         {o.status}
                       </Badge>
                     </td>
+                    <td className="space-x-2 text-right whitespace-nowrap">
+                      <Link
+                        href={`/receipts/${o.id}`}
+                        className="text-sm font-medium text-primary underline"
+                      >
+                        Reprint
+                      </Link>
+                      {canVoid && o.status !== "CANCELLED" ? (
+                        <button
+                          type="button"
+                          className="text-sm font-medium text-danger underline"
+                          onClick={() => {
+                            setVoidId(o.id);
+                            setVoidReason("");
+                            setVoidPin("");
+                            setVoidMsg("");
+                          }}
+                        >
+                          Void
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -274,6 +362,54 @@ export default function PosOrderReportsPage() {
           </div>
         </>
       ) : null}
+
+      {voidId ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+          <div className="w-full max-w-md space-y-3 rounded-xl bg-surface p-5 shadow-xl">
+            <h3 className="text-base font-semibold">Void order</h3>
+            <p className="text-sm text-ink-muted">
+              Completed orders are never deleted. A void is logged with your reason
+              {role === "ADMINISTRATOR" ? "" : " and manager PIN"}.
+            </p>
+            <div>
+              <label className="field-label">Reason *</label>
+              <textarea
+                className="field-input min-h-[72px]"
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="Customer cancelled, wrong items, …"
+              />
+            </div>
+            {role !== "ADMINISTRATOR" ? (
+              <div>
+                <label className="field-label">Manager PIN *</label>
+                <input
+                  className="field-input"
+                  type="password"
+                  inputMode="numeric"
+                  value={voidPin}
+                  onChange={(e) => setVoidPin(e.target.value)}
+                  placeholder="••••"
+                />
+              </div>
+            ) : null}
+            {voidMsg ? <p className="text-sm text-success">{voidMsg}</p> : null}
+            <div className="flex gap-2">
+              <Button onClick={submitVoid} disabled={voidBusy}>
+                {voidBusy ? "Voiding…" : "Confirm void"}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setVoidId(null)}
+                disabled={voidBusy}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 }

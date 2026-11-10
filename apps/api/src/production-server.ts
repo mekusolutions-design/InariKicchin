@@ -91,7 +91,7 @@ function applyCors(req: import('node:http').IncomingMessage, res: import('node:h
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Idempotency-Key');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
@@ -360,12 +360,42 @@ const server = createServer(async (req, res) => {
       if (useDurable && stockRepo) return json(req, res, 201, await stockRepo.receiveStock(body));
       return json(req, res, 201, store.receiveStock(body));
     }
+    if (req.method === 'POST' && path === '/wastage') {
+      const s = await auth(req);
+      assertPermission(s.role, 'wastage:write');
+      const body = await readBody(req);
+      const payload = {
+        productId: body.productId || undefined,
+        makelineProductId: body.makelineProductId || undefined,
+        quantityBase: Number(body.quantityBase ?? body.quantity ?? 0),
+        reasonCode: String(body.reasonCode ?? body.reason ?? '').trim(),
+        wastedOn: body.wastedOn || body.date || new Date().toISOString().slice(0, 10),
+        userId: s.userId,
+      };
+      if (useDurable && stockRepo) return json(req, res, 201, await stockRepo.recordWastage(payload));
+      return json(req, res, 201, store.recordWastage({ ...payload, quantity: payload.quantityBase }));
+    }
     if (req.method === 'POST' && path === '/closings') {
       const s = await auth(req);
       assertPermission(s.role, 'closing:write');
       const body = await readBody(req);
       body.submittedById = body.submittedById ?? s.userId;
       if (!body.idempotencyKey) body.idempotencyKey = (req.headers['idempotency-key'] as string) || crypto.randomUUID();
+      if (!body.periodStart || !body.periodEnd) {
+        const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Nairobi' });
+        body.periodStart = body.periodStart ?? `${day}T00:00:00+03:00`;
+        body.periodEnd = body.periodEnd ?? `${day}T23:59:59+03:00`;
+      }
+      // Normalise itemType from frontend shortcuts
+      if (Array.isArray(body.items)) {
+        body.items = body.items.map((it: Record<string, unknown>) => {
+          if (it.itemType) return it;
+          if (it.makelineProductId || it.kind === 'makeline') {
+            return { ...it, itemType: 'MAKELINE', makelineProductId: it.makelineProductId ?? it.productId };
+          }
+          return { ...it, itemType: 'PRODUCT' };
+        });
+      }
       if (useDurable && stockRepo) return json(req, res, 201, await stockRepo.submitClosing(body));
       return json(req, res, 201, store.submitClosing(body));
     }
@@ -463,6 +493,42 @@ const server = createServer(async (req, res) => {
       if (useDurable && readRepo) return json(req, res, 200, await readRepo.posOrderReport(from, to));
       return json(req, res, 200, store.salesReport?.(from, to) ?? {});
     }
+    if (req.method === 'POST' && path === '/menu/items') {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.createMenuItem({
+          name: body.name,
+          code: body.code,
+          category: body.category,
+          price: body.price,
+          description: body.description,
+          isAvailable: body.isAvailable,
+          userId: s.userId,
+        }));
+      }
+      return json(req, res, 501, { error: 'Menu create requires PostgreSQL' });
+    }
+    if (req.method === 'PUT' && path.startsWith('/menu/items/') && path.split('/').length === 4) {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const id = path.split('/')[3];
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.updateMenuItem({
+          id,
+          name: body.name,
+          code: body.code,
+          category: body.category,
+          price: body.price,
+          description: body.description,
+          isAvailable: body.isAvailable,
+          userId: s.userId,
+        }));
+      }
+      return json(req, res, 501, { error: 'Menu update requires PostgreSQL' });
+    }
     if (req.method === 'POST' && path.startsWith('/menu/items/') && path.endsWith('/archive')) {
       const s = await auth(req);
       assertPermission(s.role, 'menu:write');
@@ -477,6 +543,60 @@ const server = createServer(async (req, res) => {
       }
       return json(req, res, 501, { error: 'Menu archive requires PostgreSQL' });
     }
+    if (req.method === 'GET' && path === '/menu/categories') {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:read');
+      if (useDurable && catalogRepo) return json(req, res, 200, await catalogRepo.listCategories());
+      return json(req, res, 200, []);
+    }
+    if (req.method === 'POST' && path === '/menu/categories') {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.createCategory({ name: body.name, sortOrder: body.sortOrder, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Categories require PostgreSQL' });
+    }
+    if (req.method === 'PUT' && path.startsWith('/menu/categories/') && path.split('/').length === 4) {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const id = path.split('/')[3];
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.renameCategory({ id, name: body.name, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Categories require PostgreSQL' });
+    }
+    if (req.method === 'GET' && path === '/recipes') {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:read');
+      const makelineProductId = url.searchParams.get('makelineProductId') || undefined;
+      const menuItemId = url.searchParams.get('menuItemId') || undefined;
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.listRecipeLines(makelineProductId, menuItemId));
+      }
+      return json(req, res, 200, []);
+    }
+    if (req.method === 'POST' && path === '/recipes') {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.upsertRecipeLine({ ...body, userId: s.userId }));
+      }
+      return json(req, res, 501, { error: 'Recipes require PostgreSQL' });
+    }
+    if (req.method === 'DELETE' && path.startsWith('/recipes/') && path.split('/').length === 3) {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const id = path.split('/')[2];
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.deleteRecipeLine(id, s.userId));
+      }
+      return json(req, res, 501, { error: 'Recipes require PostgreSQL' });
+    }
+
     if (req.method === 'GET' && path.startsWith('/orders/') && !path.endsWith('/void') && !path.endsWith('/etims') && path.split('/').length === 3) {
       const s = await auth(req);
       assertPermission(s.role, 'orders:read');

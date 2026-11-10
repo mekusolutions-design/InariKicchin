@@ -25,6 +25,7 @@ export class ReadRepository {
       isActive: p.is_active,
       categoryId: p.category_id,
       categoryName: p.category?.name,
+      kind: 'purchased' as const,
     }));
   }
 
@@ -38,18 +39,20 @@ export class ReadRepository {
       id: m.id,
       name: m.name,
       unit: m.unit.code,
+      baseUnit: m.unit.code,
       onHandQty: Number(m.on_hand_qty),
+      available: Number(m.on_hand_qty),
+      avgUnitCost: 0,
       isActive: m.is_active,
+      kind: 'makeline' as const,
     }));
   }
 
   async menu() {
     const categories = await this.prisma.menuCategory.findMany({
-      where: { is_active: true },
       orderBy: { sort_order: 'asc' },
       include: {
         items: {
-          where: { is_active: true },
           orderBy: { name: 'asc' },
         },
       },
@@ -65,10 +68,13 @@ export class ReadRepository {
           id: m.id,
           name: m.name,
           categoryId: m.category_id,
+          category: c.name,
           categoryName: c.name,
           price: Number(m.price),
           isAvailable: m.is_available,
+          isActive: m.is_active,
           description: m.description,
+          code: m.item_code,
           itemCode: m.item_code,
         })),
       ),
@@ -120,7 +126,7 @@ export class ReadRepository {
     const rows = await this.prisma.restaurantOrder.findMany({
       take: limit,
       orderBy: { created_at: 'desc' },
-      include: { lines: true, payments: true, kitchen_tickets: true },
+      include: { lines: true, payments: true, kitchen_tickets: true, cashier: true },
     });
     return rows.map((o) => this.mapOrder(o));
   }
@@ -224,31 +230,41 @@ export class ReadRepository {
       bank_account: '',
       payment_instruction: '',
       print_payment_box: '1',
+      vat_enabled: '1',
+      vat_rate: '16',
+      vat_inclusive: '1',
     };
     return { ...defaults, ...map };
   }
 
   async putSettings(input: { settings: Record<string, string>; userId?: string }) {
-    const entries = Object.entries(input.settings ?? {});
+    const entries = Object.entries(input.settings ?? {}).filter(
+      ([key, value]) => key && typeof value === 'string',
+    );
     for (const [key, value] of entries) {
-      if (!key || typeof value !== 'string') continue;
       if (key === 'receipt_note' && value.length > 200) {
         throw new Error('Receipt note max 200 characters');
       }
-      await this.prisma.systemSetting.upsert({
-        where: { key },
-        create: { key, value, updated_by: input.userId },
-        update: { value, updated_by: input.userId },
-      });
     }
-    await this.prisma.auditLog.create({
-      data: {
-        user_id: input.userId,
-        action: 'SETTINGS_UPDATED',
-        entity_type: 'system_setting',
-        new_values: input.settings,
-      },
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const [key, value] of entries) {
+        await tx.systemSetting.upsert({
+          where: { key },
+          create: { key, value, updated_by: input.userId },
+          update: { value, updated_by: input.userId },
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          user_id: input.userId,
+          action: 'SETTINGS_UPDATED',
+          entity_type: 'system_setting',
+          new_values: input.settings,
+        },
+      });
     });
+
     return this.getSettings();
   }
 
@@ -259,7 +275,7 @@ export class ReadRepository {
       where: {
         created_at: { gte: start, lte: end },
       },
-      include: { lines: true, payments: true },
+      include: { lines: true, payments: true, cashier: true },
       orderBy: { created_at: 'asc' },
     });
     const active = rows.filter((o) => o.status !== 'CANCELLED');
@@ -312,36 +328,52 @@ export class ReadRepository {
   }
 
   async meta() {
-    const [orderTypes, paymentMethods, vat, users] = await Promise.all([
-      this.prisma.orderType.findMany({ where: { is_active: true }, orderBy: { sort_order: 'asc' } }),
+    const [orderTypes, paymentMethods, vat, users, settings] = await Promise.all([
+      this.prisma.orderType.findMany({ orderBy: { sort_order: 'asc' } }),
       this.prisma.paymentMethod.findMany({ where: { is_active: true } }),
       this.prisma.vatSetting.findFirst({ orderBy: { effective_from: 'desc' } }),
       this.prisma.user.findMany({
         where: { is_active: true },
         orderBy: { full_name: 'asc' },
-        select: { id: true, full_name: true, email: true, role: true },
+        select: { id: true, full_name: true, email: true, role: true, is_active: true },
       }),
+      this.prisma.systemSetting.findMany(),
     ]);
-    const ratePercent = vat ? Number(vat.rate_percent) : 16;
+    const sMap: Record<string, string> = {};
+    for (const r of settings) sMap[r.key] = r.value;
+    const rateFromSettings = sMap.vat_rate ? Number(sMap.vat_rate) : NaN;
+    const ratePercent = Number.isFinite(rateFromSettings)
+      ? rateFromSettings
+      : vat
+        ? Number(vat.rate_percent)
+        : 16;
+    const enabled = sMap.vat_enabled !== undefined ? sMap.vat_enabled !== '0' : true;
+    const pricesIncludeVat =
+      sMap.vat_inclusive !== undefined
+        ? sMap.vat_inclusive !== '0'
+        : vat
+          ? vat.prices_include_vat
+          : true;
     return {
       orderTypes: orderTypes.map((o) => ({
         name: o.name,
         isDelivery: o.is_delivery,
         requiresReference: o.requires_reference,
+        isActive: o.is_active,
       })),
       paymentMethods: paymentMethods.map((p) => p.name),
       vat: {
-        enabled: vat ? true : true,
+        enabled,
         ratePercent,
-        // decimal form retained for POS/VAT helpers that expect 0.16
         rate: ratePercent / 100,
-        pricesIncludeVat: vat ? vat.prices_include_vat : true,
+        pricesIncludeVat,
       },
       users: users.map((u) => ({
         id: u.id,
         fullName: u.full_name,
         email: u.email,
         role: u.role,
+        isActive: u.is_active,
       })),
       durable: true,
     };
@@ -421,7 +453,7 @@ export class ReadRepository {
           created_at: { gte: new Date(from), lte: new Date(`${to}T23:59:59.999Z`) },
           status: { not: 'CANCELLED' },
         },
-        include: { lines: true, payments: true, kitchen_tickets: true },
+        include: { lines: true, payments: true, kitchen_tickets: true, cashier: true },
         orderBy: { created_at: 'asc' },
       }),
       this.prisma.stockClosingSession.findMany({
@@ -470,11 +502,13 @@ export class ReadRepository {
       status: o.status,
       paymentStatus: o.payment_status,
       orderType: o.order_type,
+      tableNo: o.table_no,
       platformReference: o.delivery_ref,
       subtotal: Number(o.subtotal),
       vatAmount: Number(o.vat_total),
       totalAmount: Number(o.grand_total),
       cashierId: o.cashier_id,
+      cashierName: o.cashier?.full_name,
       createdAt: o.created_at?.toISOString?.() ?? o.created_at,
       lines: (o.lines ?? []).map((l: any) => ({
         id: l.id,
@@ -931,5 +965,336 @@ export class CatalogRepository {
       categoryId: row.category_id,
       categoryName: row.category?.name,
     };
+  }
+
+  async ensureCategory(name: string) {
+    const n = String(name ?? '').trim();
+    if (!n) throw new Error('Category name is required');
+    const existing = await this.prisma.menuCategory.findFirst({
+      where: { name: { equals: n, mode: 'insensitive' } },
+    });
+    if (existing) return existing;
+    return this.prisma.menuCategory.create({
+      data: { name: n, sort_order: 0, is_active: true },
+    });
+  }
+
+  async createMenuItem(input: {
+    name: string;
+    code?: string;
+    category: string;
+    price: number;
+    description?: string;
+    isAvailable?: boolean;
+    userId?: string;
+  }) {
+    const name = String(input.name ?? '').trim();
+    if (!name) throw new Error('Menu item name is required');
+    const price = Number(input.price);
+    if (!Number.isFinite(price) || price <= 0) throw new Error('Price must be greater than zero');
+    const code = input.code?.trim() || null;
+    if (code) {
+      const codeClash = await this.prisma.menuItem.findFirst({ where: { item_code: code } });
+      if (codeClash) throw new Error(`Item code “${code}” is already used`);
+    }
+    const nameClash = await this.prisma.menuItem.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' }, is_active: true },
+    });
+    if (nameClash) throw new Error(`Menu item “${nameClash.name}” already exists`);
+
+    const category = await this.ensureCategory(input.category || 'Uncategorised');
+    const available = input.isAvailable !== false;
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.menuItem.create({
+        data: {
+          name,
+          item_code: code,
+          category_id: category.id,
+          price,
+          description: input.description?.trim() || null,
+          is_available: available,
+          is_active: true,
+        },
+        include: { category: true },
+      });
+      await tx.menuItemPriceHistory.create({
+        data: {
+          menu_item_id: created.id,
+          old_price: price,
+          new_price: price,
+          changed_by_id: input.userId,
+          reason: 'Initial price',
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          user_id: input.userId,
+          action: 'MENU_ITEM_CREATED',
+          entity_type: 'menu_item',
+          entity_id: created.id,
+          new_values: { name, price, category: category.name },
+        },
+      });
+      return created;
+    });
+
+    return {
+      id: row.id,
+      name: row.name,
+      code: row.item_code,
+      category: row.category.name,
+      price: Number(row.price),
+      description: row.description,
+      isAvailable: row.is_available,
+      isActive: row.is_active,
+    };
+  }
+
+  async updateMenuItem(input: {
+    id: string;
+    name?: string;
+    code?: string | null;
+    category?: string;
+    price?: number;
+    description?: string | null;
+    isAvailable?: boolean;
+    userId?: string;
+  }) {
+    const existing = await this.prisma.menuItem.findUnique({
+      where: { id: input.id },
+      include: { category: true },
+    });
+    if (!existing) throw new Error('Menu item not found');
+
+    let categoryId = existing.category_id;
+    if (input.category) {
+      const cat = await this.ensureCategory(input.category);
+      categoryId = cat.id;
+    }
+
+    const newPrice = input.price !== undefined ? Number(input.price) : Number(existing.price);
+    if (!Number.isFinite(newPrice) || newPrice <= 0) throw new Error('Price must be greater than zero');
+
+    const name = input.name !== undefined ? String(input.name).trim() : existing.name;
+    if (!name) throw new Error('Menu item name is required');
+
+    const code = input.code !== undefined ? (input.code?.trim() || null) : existing.item_code;
+    if (code) {
+      const codeClash = await this.prisma.menuItem.findFirst({
+        where: { item_code: code, NOT: { id: input.id } },
+      });
+      if (codeClash) throw new Error(`Item code “${code}” is already used`);
+    }
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      if (Number(existing.price) !== newPrice) {
+        await tx.menuItemPriceHistory.create({
+          data: {
+            menu_item_id: existing.id,
+            old_price: existing.price,
+            new_price: newPrice,
+            changed_by_id: input.userId,
+            reason: 'Price update',
+          },
+        });
+      }
+      const updated = await tx.menuItem.update({
+        where: { id: input.id },
+        data: {
+          name,
+          item_code: code,
+          category_id: categoryId,
+          price: newPrice,
+          description:
+            input.description !== undefined
+              ? input.description?.trim() || null
+              : existing.description,
+          is_available:
+            input.isAvailable !== undefined ? Boolean(input.isAvailable) : existing.is_available,
+        },
+        include: { category: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          user_id: input.userId,
+          action: 'MENU_ITEM_UPDATED',
+          entity_type: 'menu_item',
+          entity_id: updated.id,
+          old_values: { name: existing.name, price: Number(existing.price) },
+          new_values: { name: updated.name, price: Number(updated.price) },
+        },
+      });
+      return updated;
+    });
+
+    return {
+      id: row.id,
+      name: row.name,
+      code: row.item_code,
+      category: row.category.name,
+      price: Number(row.price),
+      description: row.description,
+      isAvailable: row.is_available,
+      isActive: row.is_active,
+    };
+  }
+
+  async listCategories() {
+    const rows = await this.prisma.menuCategory.findMany({
+      orderBy: [{ sort_order: 'asc' }, { name: 'asc' }],
+      include: { _count: { select: { items: true } } },
+    });
+    return rows.map((c) => ({
+      id: c.id,
+      name: c.name,
+      sortOrder: c.sort_order,
+      isActive: c.is_active,
+      itemCount: c._count.items,
+    }));
+  }
+
+  async createCategory(input: { name: string; sortOrder?: number; userId?: string }) {
+    const name = String(input.name ?? '').trim();
+    if (!name) throw new Error('Category name is required');
+    const existing = await this.prisma.menuCategory.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } },
+    });
+    if (existing) throw new Error(`Category “${existing.name}” already exists`);
+    const maxSort = await this.prisma.menuCategory.aggregate({ _max: { sort_order: true } });
+    const row = await this.prisma.menuCategory.create({
+      data: {
+        name,
+        sort_order: input.sortOrder ?? (maxSort._max.sort_order ?? 0) + 1,
+        is_active: true,
+      },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'MENU_CATEGORY_CREATED',
+        entity_type: 'menu_category',
+        entity_id: row.id,
+        new_values: { name: row.name },
+      },
+    });
+    return { id: row.id, name: row.name, sortOrder: row.sort_order, isActive: row.is_active, itemCount: 0 };
+  }
+
+  async renameCategory(input: { id: string; name: string; userId?: string }) {
+    const name = String(input.name ?? '').trim();
+    if (!name) throw new Error('Category name is required');
+    const clash = await this.prisma.menuCategory.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' }, NOT: { id: input.id } },
+    });
+    if (clash) throw new Error(`Category “${clash.name}” already exists`);
+    const row = await this.prisma.menuCategory.update({
+      where: { id: input.id },
+      data: { name },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'MENU_CATEGORY_RENAMED',
+        entity_type: 'menu_category',
+        entity_id: row.id,
+        new_values: { name: row.name },
+      },
+    });
+    return { id: row.id, name: row.name, sortOrder: row.sort_order, isActive: row.is_active };
+  }
+
+  async listRecipeLines(makelineProductId?: string, menuItemId?: string) {
+    const rows = await this.prisma.recipeLine.findMany({
+      where: {
+        ...(makelineProductId ? { output_makeline_id: makelineProductId } : {}),
+        ...(menuItemId ? { output_menu_item_id: menuItemId } : {}),
+      },
+      include: {
+        input_product: { include: { base_unit: true } },
+        output_makeline: true,
+        output_menu_item: true,
+      },
+      orderBy: { id: 'asc' },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      outputMakelineId: r.output_makeline_id,
+      outputMenuItemId: r.output_menu_item_id,
+      inputProductId: r.input_product_id,
+      inputProductName: r.input_product?.name,
+      inputUnit: r.input_product?.base_unit?.code,
+      quantityPerUnit: Number(r.quantity),
+    }));
+  }
+
+  async upsertRecipeLine(input: {
+    outputMakelineId?: string;
+    outputMenuItemId?: string;
+    inputProductId: string;
+    quantityPerUnit: number;
+    userId?: string;
+  }) {
+    if (!input.outputMakelineId && !input.outputMenuItemId) {
+      throw new Error('outputMakelineId or outputMenuItemId is required');
+    }
+    if (!input.inputProductId) throw new Error('inputProductId is required');
+    const qty = Number(input.quantityPerUnit);
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error('quantityPerUnit must be positive');
+
+    const existing = await this.prisma.recipeLine.findFirst({
+      where: {
+        input_product_id: input.inputProductId,
+        output_makeline_id: input.outputMakelineId ?? null,
+        output_menu_item_id: input.outputMenuItemId ?? null,
+      },
+    });
+    const row = existing
+      ? await this.prisma.recipeLine.update({
+          where: { id: existing.id },
+          data: { quantity: qty },
+        })
+      : await this.prisma.recipeLine.create({
+          data: {
+            output_makeline_id: input.outputMakelineId ?? null,
+            output_menu_item_id: input.outputMenuItemId ?? null,
+            input_product_id: input.inputProductId,
+            quantity: qty,
+          },
+        });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'RECIPE_LINE_UPSERTED',
+        entity_type: 'recipe_line',
+        entity_id: row.id,
+        new_values: {
+          inputProductId: input.inputProductId,
+          quantityPerUnit: qty,
+          outputMakelineId: input.outputMakelineId,
+          outputMenuItemId: input.outputMenuItemId,
+        },
+      },
+    });
+    return {
+      id: row.id,
+      outputMakelineId: row.output_makeline_id,
+      outputMenuItemId: row.output_menu_item_id,
+      inputProductId: row.input_product_id,
+      quantityPerUnit: Number(row.quantity),
+    };
+  }
+
+  async deleteRecipeLine(id: string, userId?: string) {
+    await this.prisma.recipeLine.delete({ where: { id } });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: userId,
+        action: 'RECIPE_LINE_DELETED',
+        entity_type: 'recipe_line',
+        entity_id: id,
+      },
+    });
+    return { ok: true };
   }
 }

@@ -266,11 +266,61 @@ export class StockRepository {
     producedById: string;
     producedAt?: string;
     notes?: string;
+    /** When true (or settings module on), deduct recipe inputs from purchased stock */
+    applyRecipeDeduction?: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
       const mp = await tx.makelineProduct.findUnique({ where: { id: input.makelineProductId } });
       if (!mp?.is_active) throw new Error('Makeline product not found');
       if (input.quantity <= 0) throw new Error('Quantity must be positive');
+
+      const settings = await tx.systemSetting.findMany({
+        where: { key: { in: ['module_makeline_deductions'] } },
+      });
+      const sMap: Record<string, string> = {};
+      for (const r of settings) sMap[r.key] = r.value;
+      const deductOn =
+        input.applyRecipeDeduction === true ||
+        (input.applyRecipeDeduction !== false && sMap.module_makeline_deductions === '1');
+
+      const deducted: Array<{ productId: string; name: string; qty: number }> = [];
+      if (deductOn) {
+        const recipes = await tx.recipeLine.findMany({
+          where: { output_makeline_id: mp.id },
+          include: { input_product: true },
+        });
+        for (const r of recipes) {
+          if (!r.input_product_id || !r.input_product) continue;
+          const need = Number(r.quantity) * input.quantity;
+          if (need <= 0) continue;
+          const onHand = Number(r.input_product.on_hand_qty);
+          if (onHand < need) {
+            throw new Error(
+              `Insufficient ${r.input_product.name} for recipe: need ${need}, have ${onHand}`,
+            );
+          }
+          await tx.product.update({
+            where: { id: r.input_product_id },
+            data: { on_hand_qty: { decrement: d(need) } },
+          });
+          const unitCost = Number(r.input_product.avg_unit_cost);
+          await tx.stockMovement.create({
+            data: {
+              movement_type: 'RECIPE_DEDUCTION',
+              product_id: r.input_product_id,
+              quantity_delta: d(-need),
+              unit_cost: d(unitCost),
+              value_delta: d(-(need * unitCost)),
+              source_type: 'makeline_production',
+              source_id: mp.id,
+              idempotency_key: `recipe_deduct:${mp.id}:${r.input_product_id}:${Date.now()}:${need}`,
+              actor_id: input.producedById,
+              notes: `Recipe for ${mp.name}`,
+            },
+          });
+          deducted.push({ productId: r.input_product_id, name: r.input_product.name, qty: need });
+        }
+      }
 
       await tx.makelineProduct.update({
         where: { id: mp.id },
@@ -303,6 +353,7 @@ export class StockRepository {
         makelineProductId: mp.id,
         quantity: input.quantity,
         producedById: input.producedById,
+        recipeDeducted: deducted,
       };
     });
   }

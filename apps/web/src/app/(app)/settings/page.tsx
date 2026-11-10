@@ -248,14 +248,48 @@ export default function SettingsPage() {
       )}
 
       {tab === "vat" && (
-        <div className="panel max-w-lg text-sm">
-          <p>
-            Rate: <strong>{meta?.vat?.ratePercent ?? 16}%</strong>
-            {meta?.vat?.pricesIncludeVat ? " · inclusive" : ""}
+        <div className="panel max-w-lg space-y-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.vat_enabled !== "0"}
+              disabled={!canWrite}
+              onChange={(e) => setKey("vat_enabled", e.target.checked ? "1" : "0")}
+            />
+            VAT enabled on POS and receipts
+          </label>
+          <div>
+            <label className="field-label">VAT rate (%)</label>
+            <input
+              className="field-input"
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              value={settings.vat_rate ?? String(meta?.vat?.ratePercent ?? 16)}
+              disabled={!canWrite}
+              onChange={(e) => setKey("vat_rate", e.target.value)}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.vat_inclusive !== "0"}
+              disabled={!canWrite}
+              onChange={(e) => setKey("vat_inclusive", e.target.checked ? "1" : "0")}
+            />
+            Prices include VAT (inclusive mode)
+          </label>
+          <p className="text-xs text-ink-muted">
+            Historical orders keep the VAT values stored at sale time. New orders use these settings.
+            Current meta rate: {meta?.vat?.ratePercent ?? 16}%
+            {meta?.vat?.pricesIncludeVat ? " inclusive" : ""}.
           </p>
-          <p className="mt-2 text-xs text-ink-muted">
-            Historical orders keep their VAT snapshot; changing rate creates a new effective-from row when VAT write API is used.
-          </p>
+          {canWrite ? (
+            <Button onClick={saveSettings} disabled={saving}>
+              {saving ? "Saving…" : "Save VAT settings"}
+            </Button>
+          ) : null}
         </div>
       )}
 
