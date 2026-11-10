@@ -75,6 +75,32 @@ export class ReadRepository {
     };
   }
 
+
+  async purchases(limit = 50) {
+    const rows = await this.prisma.purchase.findMany({
+      take: limit,
+      orderBy: { date_received: 'desc' },
+      include: { items: { include: { product: true, unit: true } }, supplier: true },
+    });
+    const out: Array<Record<string, unknown>> = [];
+    for (const pur of rows) {
+      for (const i of pur.items) {
+        out.push({
+          id: i.id,
+          dateReceived: pur.date_received?.toISOString?.() ?? pur.date_received,
+          productName: i.product?.name ?? '',
+          quantity: Number(i.quantity),
+          unit: i.unit?.code ?? '',
+          totalPrice: Number(i.total_price),
+          unitPrice: Number(i.unit_price),
+          supplierName: pur.supplier?.name ?? '',
+          invoiceNumber: pur.invoice_no,
+        });
+      }
+    }
+    return out;
+  }
+
   async suppliers() {
     const rows = await this.prisma.supplier.findMany({
       where: { is_active: true },
@@ -169,6 +195,120 @@ export class ReadRepository {
       reason: a.reason,
       createdAt: a.created_at.toISOString(),
     }));
+  }
+
+
+  async getSettings() {
+    const rows = await this.prisma.systemSetting.findMany();
+    const map: Record<string, string> = {};
+    for (const r of rows) map[r.key] = r.value;
+    const defaults: Record<string, string> = {
+      module_dine_pickup_delivery: '1',
+      module_table_number: '1',
+      module_kitchen_tickets: '1',
+      module_print_receipt: '1',
+      module_discounts: '0',
+      module_makeline_deductions: '0',
+      module_low_stock_alerts: '1',
+      receipt_note: 'Thank you for dining with us',
+      receipt_business_name: 'Inari Kicchin',
+      receipt_address: '',
+      receipt_phone: '',
+      receipt_kra_pin: '',
+      receipt_vat_number: '',
+      receipt_paper_width: '80',
+      paybill_business_number: '',
+      paybill_account_format: 'ORDER',
+      paybill_till_number: '',
+      bank_name: '',
+      bank_account: '',
+      payment_instruction: '',
+      print_payment_box: '1',
+    };
+    return { ...defaults, ...map };
+  }
+
+  async putSettings(input: { settings: Record<string, string>; userId?: string }) {
+    const entries = Object.entries(input.settings ?? {});
+    for (const [key, value] of entries) {
+      if (!key || typeof value !== 'string') continue;
+      if (key === 'receipt_note' && value.length > 200) {
+        throw new Error('Receipt note max 200 characters');
+      }
+      await this.prisma.systemSetting.upsert({
+        where: { key },
+        create: { key, value, updated_by: input.userId },
+        update: { value, updated_by: input.userId },
+      });
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'SETTINGS_UPDATED',
+        entity_type: 'system_setting',
+        new_values: input.settings,
+      },
+    });
+    return this.getSettings();
+  }
+
+  async posOrderReport(from: string, to: string) {
+    const start = new Date(`${from}T00:00:00+03:00`);
+    const end = new Date(`${to}T23:59:59.999+03:00`);
+    const rows = await this.prisma.restaurantOrder.findMany({
+      where: {
+        created_at: { gte: start, lte: end },
+      },
+      include: { lines: true, payments: true },
+      orderBy: { created_at: 'asc' },
+    });
+    const active = rows.filter((o) => o.status !== 'CANCELLED');
+    const voided = rows.filter((o) => o.status === 'CANCELLED');
+    const gross = active.reduce((s, o) => s + Number(o.grand_total), 0);
+    const vat = active.reduce((s, o) => s + Number(o.vat_total), 0);
+    const byPayment: Record<string, number> = {};
+    const byType: Record<string, number> = {};
+    const byHour: Record<string, number> = {};
+    for (const o of active) {
+      byType[o.order_type] = (byType[o.order_type] ?? 0) + Number(o.grand_total);
+      const hour = new Date(o.created_at).toLocaleString('en-KE', {
+        timeZone: 'Africa/Nairobi',
+        hour: '2-digit',
+        hour12: false,
+      });
+      byHour[hour] = (byHour[hour] ?? 0) + Number(o.grand_total);
+      for (const p of o.payments) {
+        if (p.status === 'CONFIRMED' || p.status === 'PENDING') {
+          byPayment[p.method_name] = (byPayment[p.method_name] ?? 0) + Number(p.amount);
+        }
+      }
+    }
+    return {
+      from,
+      to,
+      timezone: 'Africa/Nairobi',
+      orderCount: active.length,
+      voidCount: voided.length,
+      grossSales: gross,
+      vatCollected: vat,
+      netSales: gross - vat,
+      averageOrder: active.length ? gross / active.length : 0,
+      byPaymentMethod: byPayment,
+      byOrderType: byType,
+      byHour,
+      orders: rows.map((o) => this.mapOrder(o)),
+      voids: voided.map((o) => this.mapOrder(o)),
+      dayClose: {
+        expectedCash: byPayment['Cash'] ?? 0,
+        mpesa: byPayment['M-Pesa'] ?? 0,
+        card: byPayment['Card'] ?? 0,
+        bank: byPayment['Bank'] ?? 0,
+        platformUnsettled: Object.entries(byPayment)
+          .filter(([k]) => k.startsWith('Platform'))
+          .reduce((s, [, v]) => s + v, 0),
+        voids: voided.length,
+      },
+    };
   }
 
   async meta() {
@@ -448,6 +588,75 @@ export class CatalogRepository {
   private readonly prisma: import('@prisma/client').PrismaClient;
   constructor(prisma: import('@prisma/client').PrismaClient) {
     this.prisma = prisma;
+  }
+
+
+  async createMakelineProduct(input: {
+    name: string;
+    unitCode: string;
+    notes?: string;
+    userId?: string;
+  }) {
+    const name = String(input.name ?? '').trim();
+    if (!name) throw new Error('Makeline product name is required');
+    const unit = await this.prisma.unit.findUnique({ where: { code: input.unitCode } });
+    if (!unit) throw new Error(`Unknown unit: ${input.unitCode}`);
+    const existing = await this.prisma.makelineProduct.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } },
+    });
+    if (existing) throw new Error(`Makeline product “${existing.name}” already exists`);
+    const row = await this.prisma.makelineProduct.create({
+      data: {
+        name,
+        unit_id: unit.id,
+        on_hand_qty: 0,
+        is_active: true,
+      },
+      include: { unit: true },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'MAKELINE_PRODUCT_CREATED',
+        entity_type: 'makeline_product',
+        entity_id: row.id,
+        new_values: { name: row.name, unit: unit.code },
+      },
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      unit: row.unit.code,
+      onHandQty: Number(row.on_hand_qty),
+      isActive: row.is_active,
+    };
+  }
+
+
+  async setMenuItemActive(input: { id: string; isActive: boolean; userId?: string }) {
+    const active = Boolean(input.isActive);
+    const row = await this.prisma.menuItem.update({
+      where: { id: input.id },
+      data: { is_active: active, is_available: active },
+      include: { category: true },
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: input.isActive ? 'MENU_ITEM_RESTORED' : 'MENU_ITEM_ARCHIVED',
+        entity_type: 'menu_item',
+        entity_id: row.id,
+        new_values: { isActive: row.is_active },
+      },
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      isActive: row.is_active,
+      isAvailable: row.is_available,
+      category: row.category.name,
+      price: Number(row.price),
+    };
   }
 
   async createSupplier(input: {

@@ -9,6 +9,7 @@ export const NAV_SECTIONS = [
   { href: "/pos", label: "POS / Sales" },
   { href: "/kitchen-tickets", label: "Kitchen Tickets" },
   { href: "/reports", label: "Reports" },
+  { href: "/pos-order-reports", label: "POS Order Reports" },
   { href: "/suppliers", label: "Suppliers" },
   { href: "/settings", label: "Settings" },
 ] as const;

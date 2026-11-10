@@ -3,114 +3,142 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { getStoredUser } from "@/lib/auth";
 
-interface MetaRaw {
-  vat?: {
-    enabled?: boolean;
-    ratePercent?: number;
-    rate?: number;
-    pricesIncludeVat?: boolean;
-  };
-  orderTypes?: Array<{ name: string } | string>;
-  paymentMethods?: string[];
-  users?: Array<{
-    id?: string;
-    fullName?: string;
-    full_name?: string;
-    email: string;
-    role: string;
-  }>;
-  durable?: boolean;
-}
+type Tab = "modules" | "vat" | "receipt" | "payment" | "users" | "orders";
 
-interface Meta {
-  vat: { enabled: boolean; ratePercent: number; pricesIncludeVat: boolean };
-  orderTypes: Array<{ name: string }>;
-  paymentMethods: string[];
-  users: Array<{ fullName: string; email: string; role: string }>;
-  durable?: boolean;
-}
-
-function normalize(raw: MetaRaw): Meta {
-  const ratePercent =
-    raw.vat?.ratePercent != null
-      ? Number(raw.vat.ratePercent)
-      : raw.vat?.rate != null
-        ? Number(raw.vat.rate) <= 1
-          ? Number(raw.vat.rate) * 100
-          : Number(raw.vat.rate)
-        : 16;
-  return {
-    vat: {
-      enabled: raw.vat?.enabled ?? true,
-      ratePercent,
-      pricesIncludeVat: raw.vat?.pricesIncludeVat ?? true,
-    },
-    orderTypes: (raw.orderTypes ?? []).map((t) =>
-      typeof t === "string" ? { name: t } : { name: t.name },
-    ),
-    paymentMethods: raw.paymentMethods ?? [],
-    users: (raw.users ?? []).map((u) => ({
-      fullName: u.fullName ?? u.full_name ?? u.email,
-      email: u.email,
-      role: u.role,
-    })),
-    durable: raw.durable,
-  };
-}
-
-type Tab = "users" | "vat" | "payments" | "orders" | "security";
+const MODULE_KEYS: Array<{ key: string; label: string; effect: string }> = [
+  {
+    key: "module_dine_pickup_delivery",
+    label: "Dine In / Pick Up / Delivery tabs",
+    effect: "Controls which order types appear on POS",
+  },
+  {
+    key: "module_table_number",
+    label: "Table number",
+    effect: "Show table field on Dine In orders",
+  },
+  {
+    key: "module_kitchen_tickets",
+    label: "Kitchen tickets",
+    effect: "Create kitchen tickets on complete",
+  },
+  {
+    key: "module_print_receipt",
+    label: "Print receipt",
+    effect: "Show print actions after order",
+  },
+  {
+    key: "module_discounts",
+    label: "Discounts",
+    effect: "Allow discount entry on POS",
+  },
+  {
+    key: "module_makeline_deductions",
+    label: "Makeline recipe deductions",
+    effect: "Deduct purchased stock on production (when recipes exist)",
+  },
+  {
+    key: "module_low_stock_alerts",
+    label: "Low-stock alerts",
+    effect: "Show low-stock on dashboard",
+  },
+];
 
 export default function SettingsPage() {
-  const [meta, setMeta] = useState<Meta | null>(null);
+  const [tab, setTab] = useState<Tab>("modules");
+  const [settings, setSettings] = useState<Record<string, string>>({});
+  const [meta, setMeta] = useState<{
+    vat?: { ratePercent: number; pricesIncludeVat: boolean; enabled?: boolean };
+    users?: Array<{ fullName: string; email: string; role: string }>;
+    orderTypes?: Array<{ name: string }>;
+    paymentMethods?: string[];
+  } | null>(null);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<Tab>("users");
+  const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
+  const role = getStoredUser()?.role;
+
+  const canWrite =
+    role === "ADMINISTRATOR" || role === "MANAGER";
+  const canUsers = role === "ADMINISTRATOR";
+
+  async function load() {
+    try {
+      const [s, m] = await Promise.all([
+        api<Record<string, string>>("/settings").catch(() => ({})),
+        api<typeof meta>("/meta").catch(() => null),
+      ]);
+      setSettings(s);
+      setMeta(m);
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load settings");
+    }
+  }
 
   useEffect(() => {
-    api<MetaRaw>("/meta")
-      .then((raw) => setMeta(normalize(raw)))
-      .catch((e) => setError(e.message));
+    void load();
   }, []);
 
-  if (error) {
+  function setKey(key: string, value: string) {
+    setSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function saveSettings() {
+    if (!canWrite) {
+      setError("You do not have permission to update settings");
+      return;
+    }
+    setSaving(true);
+    setMsg("");
+    setError("");
+    try {
+      const next = await api<Record<string, string>>("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ settings }),
+      });
+      setSettings(next);
+      setMsg("Settings saved");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "modules", label: "Modules" },
+    { id: "vat", label: "VAT" },
+    { id: "receipt", label: "Receipt" },
+    { id: "payment", label: "Payment details" },
+    { id: "users", label: "Users" },
+    { id: "orders", label: "Order types" },
+  ];
+
+  if (role === "CASHIER" || role === "KITCHEN_STAFF") {
     return (
       <div>
         <h1 className="page-title">Settings</h1>
-        <p className="mt-2 text-danger">{error}</p>
-        <p className="mt-2 text-sm text-ink-muted">
-          Settings reads configuration from <code>GET /meta</code>. Ensure you
-          are signed in and the API is reachable.
+        <p className="mt-2 text-danger">
+          Cashiers and kitchen staff cannot access Settings.
         </p>
       </div>
     );
   }
-
-  if (!meta) {
-    return (
-      <div>
-        <h1 className="page-title">Settings</h1>
-        <p className="page-sub">Loading…</p>
-      </div>
-    );
-  }
-
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "users", label: "Users" },
-    { id: "vat", label: "VAT" },
-    { id: "payments", label: "Payment methods" },
-    { id: "orders", label: "Order types" },
-    { id: "security", label: "Security" },
-  ];
 
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="page-title">Users and System Settings</h1>
+        <h1 className="page-title">Settings</h1>
         <p className="page-sub">
-          Administrator controls · every change is audited
-          {meta.durable ? " · PostgreSQL-backed" : ""}
+          POS modules, VAT, receipt & payment configuration · audited changes
         </p>
       </div>
+
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
+      {msg ? <p className="text-sm text-success">{msg}</p> : null}
 
       <div className="flex flex-wrap gap-1 border-b border-border pb-px">
         {tabs.map((t) => (
@@ -129,126 +157,211 @@ export default function SettingsPage() {
         ))}
       </div>
 
-      {tab === "users" && (
-        <div className="panel">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">Users</h3>
-          <div className="overflow-x-auto">
-            <table className="table-base min-w-[400px]">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                </tr>
-              </thead>
-              <tbody>
-                {meta.users.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="py-3 text-ink-muted">
-                      No users returned by the API. Seed or bootstrap an
-                      administrator if the database is empty.
-                    </td>
-                  </tr>
-                ) : (
-                  meta.users.map((u) => (
-                    <tr key={u.email}>
-                      <td className="font-medium">{u.fullName}</td>
-                      <td className="text-ink-muted">{u.email}</td>
-                      <td>
-                        <Badge tone="info">{u.role}</Badge>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <p className="mt-3 text-xs text-ink-muted">
-            User create / role changes require administrator endpoints when
-            enabled. This view is read-only from <code>/meta</code>.
-          </p>
+      {tab === "modules" && (
+        <div className="panel space-y-3 max-w-2xl">
+          <h3 className="text-[0.95rem] font-semibold">POS module switches</h3>
+          {MODULE_KEYS.map((m) => (
+            <label
+              key={m.key}
+              className="flex items-start gap-3 rounded-lg border border-border p-3"
+            >
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={settings[m.key] !== "0"}
+                disabled={!canWrite}
+                onChange={(e) => setKey(m.key, e.target.checked ? "1" : "0")}
+              />
+              <span>
+                <span className="block text-sm font-semibold">{m.label}</span>
+                <span className="text-xs text-ink-muted">{m.effect}</span>
+              </span>
+            </label>
+          ))}
+          {canWrite ? (
+            <Button onClick={saveSettings} disabled={saving} className="min-h-11">
+              {saving ? "Saving…" : "Save modules"}
+            </Button>
+          ) : null}
         </div>
       )}
 
       {tab === "vat" && (
-        <div className="panel max-w-lg">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">VAT configuration</h3>
-          <dl className="space-y-3 text-sm">
-            <div className="flex justify-between border-b border-border pb-2">
-              <dt className="text-ink-muted">Enabled</dt>
-              <dd>
-                <Badge tone={meta.vat.enabled ? "ok" : "warn"}>
-                  {meta.vat.enabled ? "Yes" : "No"}
-                </Badge>
-              </dd>
-            </div>
-            <div className="flex justify-between border-b border-border pb-2">
-              <dt className="text-ink-muted">Rate</dt>
-              <dd className="font-semibold">{meta.vat.ratePercent}%</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-ink-muted">Prices include VAT</dt>
-              <dd className="font-semibold">
-                {meta.vat.pricesIncludeVat ? "Yes" : "No"}
-              </dd>
-            </div>
-          </dl>
+        <div className="panel max-w-lg space-y-3">
+          <h3 className="text-[0.95rem] font-semibold">VAT</h3>
+          <p className="text-sm text-ink-muted">
+            Current rate from database:{" "}
+            <strong>{meta?.vat?.ratePercent ?? 16}%</strong>
+            {meta?.vat?.pricesIncludeVat ? " · prices include VAT" : ""}
+          </p>
+          <p className="text-xs text-ink-muted">
+            Changing VAT rate uses an effective-from history row so past orders
+            are not rewritten. Use the API{" "}
+            <code>PUT /settings/vat</code> when that route is deployed, or
+            update VatSetting via admin process.
+          </p>
         </div>
       )}
 
-      {tab === "payments" && (
-        <div className="panel max-w-lg">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">Payment methods</h3>
-          <ul className="space-y-2">
-            {meta.paymentMethods.length === 0 ? (
-              <li className="text-sm text-ink-muted">None configured</li>
-            ) : (
-              meta.paymentMethods.map((m) => (
-                <li
-                  key={m}
-                  className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5 text-sm"
-                >
-                  <span className="font-medium">{m}</span>
-                  <Badge tone="ok">Active</Badge>
-                </li>
-              ))
-            )}
-          </ul>
+      {tab === "receipt" && (
+        <div className="panel max-w-lg space-y-3">
+          <h3 className="text-[0.95rem] font-semibold">Receipt header</h3>
+          {(
+            [
+              ["receipt_business_name", "Business name"],
+              ["receipt_address", "Address"],
+              ["receipt_phone", "Phone"],
+              ["receipt_kra_pin", "KRA PIN"],
+              ["receipt_vat_number", "VAT number"],
+            ] as const
+          ).map(([key, label]) => (
+            <div key={key}>
+              <label className="field-label">{label}</label>
+              <input
+                className="field-input"
+                value={settings[key] ?? ""}
+                disabled={!canWrite}
+                onChange={(e) => setKey(key, e.target.value)}
+              />
+            </div>
+          ))}
+          <div>
+            <label className="field-label">Receipt note (max 200)</label>
+            <textarea
+              className="field-input min-h-[72px]"
+              maxLength={200}
+              value={settings.receipt_note ?? ""}
+              disabled={!canWrite}
+              onChange={(e) => setKey("receipt_note", e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="field-label">Paper width</label>
+            <select
+              className="field-input"
+              value={settings.receipt_paper_width ?? "80"}
+              disabled={!canWrite}
+              onChange={(e) => setKey("receipt_paper_width", e.target.value)}
+            >
+              <option value="80">80 mm</option>
+              <option value="58">58 mm</option>
+            </select>
+          </div>
+          {canWrite ? (
+            <Button onClick={saveSettings} disabled={saving} className="min-h-11">
+              {saving ? "Saving…" : "Save receipt settings"}
+            </Button>
+          ) : null}
+        </div>
+      )}
+
+      {tab === "payment" && (
+        <div className="panel max-w-lg space-y-3">
+          <h3 className="text-[0.95rem] font-semibold">
+            Payment box (in-house receipts)
+          </h3>
+          {(
+            [
+              ["paybill_business_number", "Paybill business number"],
+              ["paybill_till_number", "Till number"],
+              ["bank_name", "Bank name"],
+              ["bank_account", "Bank account"],
+              ["payment_instruction", "Custom payment instruction"],
+            ] as const
+          ).map(([key, label]) => (
+            <div key={key}>
+              <label className="field-label">{label}</label>
+              <input
+                className="field-input"
+                value={settings[key] ?? ""}
+                disabled={!canWrite}
+                onChange={(e) => setKey(key, e.target.value)}
+              />
+            </div>
+          ))}
+          <div>
+            <label className="field-label">Account format</label>
+            <select
+              className="field-input"
+              value={settings.paybill_account_format ?? "ORDER"}
+              disabled={!canWrite}
+              onChange={(e) =>
+                setKey("paybill_account_format", e.target.value)
+              }
+            >
+              <option value="ORDER">Order number</option>
+              <option value="TABLE">Table number</option>
+              <option value="FIXED">Fixed text</option>
+            </select>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.print_payment_box !== "0"}
+              disabled={!canWrite}
+              onChange={(e) =>
+                setKey("print_payment_box", e.target.checked ? "1" : "0")
+              }
+            />
+            Print payment box on in-house receipts
+          </label>
+          {canWrite ? (
+            <Button onClick={saveSettings} disabled={saving} className="min-h-11">
+              {saving ? "Saving…" : "Save payment details"}
+            </Button>
+          ) : null}
+        </div>
+      )}
+
+      {tab === "users" && (
+        <div className="panel overflow-x-auto">
+          <h3 className="mb-3 text-[0.95rem] font-semibold">Users</h3>
+          {!canUsers ? (
+            <p className="text-sm text-ink-muted">
+              Only administrators manage users.
+            </p>
+          ) : null}
+          <table className="table-base min-w-[400px]">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(meta?.users ?? []).map((u) => (
+                <tr key={u.email}>
+                  <td className="font-medium">{u.fullName}</td>
+                  <td className="text-ink-muted">{u.email}</td>
+                  <td>
+                    <Badge tone="info">{u.role}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
       {tab === "orders" && (
         <div className="panel max-w-lg">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">
-            Order types & delivery platforms
-          </h3>
+          <h3 className="mb-3 text-[0.95rem] font-semibold">Order types</h3>
           <ul className="space-y-2">
-            {meta.orderTypes.length === 0 ? (
-              <li className="text-sm text-ink-muted">None configured</li>
-            ) : (
-              meta.orderTypes.map((t) => (
-                <li
-                  key={t.name}
-                  className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5 text-sm"
-                >
-                  <span className="font-medium">{t.name}</span>
-                  <Badge tone="ok">Active</Badge>
-                </li>
-              ))
-            )}
+            {(meta?.orderTypes ?? []).map((t) => (
+              <li
+                key={t.name}
+                className="flex justify-between rounded-lg border border-border px-3 py-2 text-sm"
+              >
+                <span className="font-medium">{t.name}</span>
+                <Badge tone="ok">Active</Badge>
+              </li>
+            ))}
           </ul>
-        </div>
-      )}
-
-      {tab === "security" && (
-        <div className="panel max-w-lg">
-          <h3 className="mb-3 text-[0.95rem] font-semibold">Security</h3>
-          <ul className="space-y-2 text-sm text-ink-muted">
-            <li>• Session tokens are opaque and stored as digests server-side</li>
-            <li>• Protected routes require a valid Bearer token</li>
-            <li>• Login lockout is enforced after repeated failures</li>
-            <li>• Role permissions are checked on mutating API routes</li>
-          </ul>
+          <p className="mt-3 text-xs text-ink-muted">
+            Add/edit order types via database seed or future order-type manager
+            API. Kind (in-house vs delivery) drives POS payment behaviour.
+          </p>
         </div>
       )}
     </div>

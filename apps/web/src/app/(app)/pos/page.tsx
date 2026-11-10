@@ -14,8 +14,8 @@ interface MenuItem {
   category?: string;
 }
 interface Meta {
-  orderTypes: Array<{ name: string }>;
-  paymentMethods?: Array<{ name: string }>;
+  orderTypes: Array<{ name: string; isDelivery?: boolean; requiresReference?: boolean }>;
+  paymentMethods?: Array<{ name: string } | string>;
 }
 
 const FALLBACK_ORDER_TYPES = [
@@ -32,6 +32,9 @@ const FALLBACK_ORDER_TYPES = [
 export default function PosPage() {
   const [items, setItems] = useState<MenuItem[]>([]);
   const [orderTypes, setOrderTypes] = useState<string[]>(FALLBACK_ORDER_TYPES);
+  const [orderTypeMeta, setOrderTypeMeta] = useState<
+    Array<{ name: string; isDelivery?: boolean; requiresReference?: boolean }>
+  >([]);
   const [orderType, setOrderType] = useState("Dine In");
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
@@ -40,6 +43,7 @@ export default function PosPage() {
   const [paymentMethod, setPaymentMethod] = useState("M-Pesa");
   const [mpesaCode, setMpesaCode] = useState("");
   const [result, setResult] = useState("");
+  const [lastOrderId, setLastOrderId] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -50,8 +54,9 @@ export default function PosPage() {
     ])
       .then(([menu, meta]) => {
         setItems(menu.items ?? []);
-        const types =
-          meta.orderTypes?.map((t) => t.name).filter(Boolean) ?? [];
+        const ot = meta.orderTypes ?? [];
+        setOrderTypeMeta(ot);
+        const types = ot.map((t) => t.name).filter(Boolean);
         if (types.length) {
           setOrderTypes(types);
           setOrderType(types[0]);
@@ -92,6 +97,13 @@ export default function PosPage() {
   const vatRate = 0.16;
   const netOfVat = subtotal / (1 + vatRate);
   const vatAmount = subtotal - netOfVat;
+  const currentMeta = orderTypeMeta.find((t) => t.name === orderType);
+  const isDelivery =
+    currentMeta?.isDelivery === true ||
+    (!currentMeta &&
+      !["Dine In", "Pick Up"].includes(orderType));
+  const needsPlatformCode =
+    isDelivery || currentMeta?.requiresReference === true;
 
   function add(id: string) {
     const item = items.find((m) => m.id === id);
@@ -117,8 +129,11 @@ export default function PosPage() {
     setSubmitting(true);
     try {
       if (!lines.length) throw new Error("Cart is empty");
+      if (needsPlatformCode && !ref.trim()) {
+        throw new Error("Platform order code is required for delivery orders");
+      }
       const data = await api<{
-        order: { orderNo: string; paymentStatus: string; grandTotal: number };
+        order: { id?: string; orderNo: string; paymentStatus: string; grandTotal?: number; totalAmount?: number };
         ticket?: { ticketNo: string };
       }>("/pos/orders", {
         method: "POST",
@@ -137,22 +152,30 @@ export default function PosPage() {
             quantity: l.quantity,
           })),
           payments: [
-            {
-              method: paymentMethod,
-              amount: subtotal,
-              reference:
-                paymentMethod === "M-Pesa"
-                  ? mpesaCode || "POS-MPESA"
-                  : undefined,
-            },
+            isDelivery
+              ? {
+                  method: `Platform - ${orderType} (unsettled)`,
+                  amount: subtotal,
+                  reference: ref || undefined,
+                }
+              : {
+                  method: paymentMethod,
+                  amount: subtotal,
+                  reference:
+                    paymentMethod === "M-Pesa"
+                      ? mpesaCode || "POS-MPESA"
+                      : undefined,
+                },
           ],
         }),
       });
       setCart({});
       setRef("");
       setMpesaCode("");
+      const oid = (data as { order: { id?: string; orderNo: string } }).order.id || data.order.orderNo;
+      setLastOrderId(oid);
       setResult(
-        `Order ${data.order.orderNo} · ${money(data.order.grandTotal)} · ${
+        `Order ${data.order.orderNo} · ${money(data.order.grandTotal ?? data.order.totalAmount)} · ${
           data.order.paymentStatus
         }${data.ticket ? ` · Ticket ${data.ticket.ticketNo}` : ""}`,
       );
@@ -352,34 +375,52 @@ export default function PosPage() {
           </div>
 
           <div className="mt-3">
-            <div className="label-caps mb-2">Payment method</div>
-            <div className="flex flex-wrap gap-1.5">
-              {["Cash", "M-Pesa", "Card", "Bank"].map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setPaymentMethod(m)}
-                  className={clsx(
-                    "rounded-lg px-3 py-1.5 text-xs font-semibold transition",
-                    paymentMethod === m
-                      ? "bg-navy text-white"
-                      : "border border-border bg-white text-ink-muted",
-                  )}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-            {paymentMethod === "M-Pesa" ? (
-              <input
-                className="field-input mt-2"
-                placeholder="M-Pesa code e.g. SJK4H2L9QX"
-                value={mpesaCode}
-                onChange={(e) => setMpesaCode(e.target.value)}
-              />
-            ) : null}
+            {isDelivery || needsPlatformCode ? (
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                Delivery platform order — customer pays the platform. Payment
+                recorded as <strong>Platform - {orderType} (unsettled)</strong>.
+                Platform order code is required above.
+              </div>
+            ) : (
+              <>
+                <div className="label-caps mb-2">Payment method</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {["Cash", "M-Pesa", "Card", "Bank"].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setPaymentMethod(m)}
+                      className={clsx(
+                        "rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                        paymentMethod === m
+                          ? "bg-navy text-white"
+                          : "border border-border bg-white text-ink-muted",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                {paymentMethod === "M-Pesa" ? (
+                  <input
+                    className="field-input mt-2"
+                    placeholder="M-Pesa code e.g. SJK4H2L9QX"
+                    value={mpesaCode}
+                    onChange={(e) => setMpesaCode(e.target.value)}
+                  />
+                ) : null}
+              </>
+            )}
           </div>
 
+          {result && lastOrderId ? (
+            <a
+              className="mt-2 block text-center text-sm font-semibold text-primary underline"
+              href={`/receipts/${lastOrderId}`}
+            >
+              View / print receipt
+            </a>
+          ) : null}
           <Button
             className="mt-4 w-full"
             variant="success"

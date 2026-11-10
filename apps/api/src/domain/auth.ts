@@ -136,6 +136,7 @@ const PERMISSIONS: Record<Role, Set<string>> = {
     'audit:read',
     'suppliers:write',
     'settings:read',
+    'settings:write',
   ]),
   CASHIER: new Set([
     'dashboard:read',

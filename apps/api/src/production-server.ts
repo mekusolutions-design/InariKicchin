@@ -91,7 +91,7 @@ function applyCors(req: import('node:http').IncomingMessage, res: import('node:h
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Idempotency-Key');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
@@ -310,6 +310,34 @@ const server = createServer(async (req, res) => {
       if (useDurable && readRepo) return json(req, res, 200, await readRepo.makelineProducts());
       return json(req, res, 200, store.makelineProducts);
     }
+    if (req.method === 'POST' && path === '/makeline') {
+      const s = await auth(req);
+      assertPermission(s.role, 'makeline:write');
+      const body = await readBody(req);
+      if (useDurable && stockRepo) {
+        return json(req, res, 201, await stockRepo.recordMakelineProduction({
+          makelineProductId: body.productId ?? body.makelineProductId,
+          quantity: Number(body.quantity),
+          producedById: s.userId,
+          notes: body.notes,
+        }));
+      }
+      return json(req, res, 501, { error: 'Makeline production requires PostgreSQL' });
+    }
+    if (req.method === 'POST' && path === '/makeline/products') {
+      const s = await auth(req);
+      assertPermission(s.role, 'makeline:write');
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 201, await catalogRepo.createMakelineProduct({
+          name: body.name,
+          unitCode: body.unitCode ?? body.unit ?? 'kg',
+          notes: body.notes,
+          userId: s.userId,
+        }));
+      }
+      return json(req, res, 501, { error: 'Makeline product create requires PostgreSQL' });
+    }
     if (req.method === 'GET' && path === '/suppliers') {
       await auth(req);
       if (useDurable && readRepo) return json(req, res, 200, await readRepo.suppliers());
@@ -317,11 +345,18 @@ const server = createServer(async (req, res) => {
     }
 
     // Mutations — prefer PostgreSQL repositories when DATABASE_URL is set
+    if (req.method === 'GET' && path === '/purchases') {
+      const s = await auth(req);
+      assertPermission(s.role, 'products:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.purchases());
+      return json(req, res, 200, []);
+    }
     if (req.method === 'POST' && path === '/purchases') {
       const s = await auth(req);
       assertPermission(s.role, 'purchases:write');
       const body = await readBody(req);
       body.createdById = body.createdById ?? s.userId;
+      if (body.invoiceNumber && !body.invoiceNo) body.invoiceNo = body.invoiceNumber;
       if (useDurable && stockRepo) return json(req, res, 201, await stockRepo.receiveStock(body));
       return json(req, res, 201, store.receiveStock(body));
     }
@@ -340,7 +375,18 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       body.cashierId = body.cashierId ?? s.userId;
       if (!body.idempotencyKey) body.idempotencyKey = (req.headers['idempotency-key'] as string) || crypto.randomUUID();
-      if (useDurable && orderRepo) return json(req, res, 201, await orderRepo.createOrder(body));
+      if (useDurable && orderRepo) {
+        const order = await orderRepo.createOrder(body);
+        return json(req, res, 201, {
+          order: {
+            ...order,
+            grandTotal: order.totalAmount ?? order.grandTotal,
+          },
+          ticket: order.kitchenTicketId
+            ? { id: order.kitchenTicketId, ticketNo: order.orderNo }
+            : undefined,
+        });
+      }
       return json(req, res, 201, store.createOrder(body));
     }
     if (req.method === 'POST' && path.startsWith('/kitchen/tickets/') && path.endsWith('/status')) {
@@ -382,6 +428,58 @@ const server = createServer(async (req, res) => {
         return json(req, res, 201, await catalogRepo.createSupplier({ ...body, userId: s.userId }));
       }
       return json(req, res, 501, { error: 'Supplier create requires durable PostgreSQL' });
+    }
+    if (req.method === 'GET' && path === '/settings') {
+      const s = await auth(req);
+      assertPermission(s.role, 'settings:read');
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.getSettings());
+      return json(req, res, 200, {});
+    }
+    if (req.method === 'PUT' && path === '/settings') {
+      const s = await auth(req);
+      assertPermission(s.role, 'settings:write');
+      const body = await readBody(req);
+      if (useDurable && readRepo) {
+        return json(req, res, 200, await readRepo.putSettings({
+          settings: body.settings ?? body,
+          userId: s.userId,
+        }));
+      }
+      return json(req, res, 501, { error: 'Settings require PostgreSQL' });
+    }
+    if (req.method === 'GET' && path === '/reports/pos-orders') {
+      const s = await auth(req);
+      assertPermission(s.role, 'reports:read');
+      const from = url.searchParams.get('from') ?? new Date().toISOString().slice(0, 10);
+      const to = url.searchParams.get('to') ?? from;
+      if (useDurable && readRepo) return json(req, res, 200, await readRepo.posOrderReport(from, to));
+      return json(req, res, 200, store.salesReport?.(from, to) ?? {});
+    }
+    if (req.method === 'POST' && path.startsWith('/menu/items/') && path.endsWith('/archive')) {
+      const s = await auth(req);
+      assertPermission(s.role, 'menu:write');
+      const id = path.split('/')[3];
+      const body = await readBody(req);
+      if (useDurable && catalogRepo) {
+        return json(req, res, 200, await catalogRepo.setMenuItemActive({
+          id,
+          isActive: body.isActive !== false && body.archive !== true,
+          userId: s.userId,
+        }));
+      }
+      return json(req, res, 501, { error: 'Menu archive requires PostgreSQL' });
+    }
+    if (req.method === 'GET' && path.startsWith('/orders/') && !path.endsWith('/void') && !path.endsWith('/etims') && path.split('/').length === 3) {
+      const s = await auth(req);
+      assertPermission(s.role, 'orders:read');
+      const id = path.split('/')[2];
+      if (useDurable && readRepo) {
+        const all = await readRepo.orders(500);
+        const order = all.find((o: any) => o.id === id || o.orderNo === id);
+        if (!order) return json(req, res, 404, { error: 'Order not found' });
+        return json(req, res, 200, order);
+      }
+      return json(req, res, 404, { error: 'Order not found' });
     }
     if (req.method === 'POST' && path === '/products') {
       const s = await auth(req);
