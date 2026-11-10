@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState , type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -98,7 +98,7 @@ export default function SettingsPage() {
     }
   }
 
-  async function createUser(e: React.FormEvent) {
+  async function createUser(e: FormEvent) {
     e.preventDefault();
     setError("");
     setMsg("");
@@ -117,7 +117,7 @@ export default function SettingsPage() {
     }
   }
 
-  async function saveOrderType(e: React.FormEvent) {
+  async function saveOrderType(e: FormEvent) {
     e.preventDefault();
     setError("");
     try {
@@ -157,7 +157,7 @@ export default function SettingsPage() {
     }
   }
 
-  async function saveManagerPin(e: React.FormEvent) {
+  async function saveManagerPin(e: FormEvent) {
     e.preventDefault();
     if (managerPin !== managerPin2) {
       setError("PIN confirmation does not match");

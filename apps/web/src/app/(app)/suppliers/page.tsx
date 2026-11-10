@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState , type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -48,7 +48,7 @@ export default function SuppliersPage() {
     s.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
 
-  async function createSupplier(e: React.FormEvent) {
+  async function createSupplier(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError("");

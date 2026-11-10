@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState , type FormEvent } from "react";
 import { api, money } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -126,7 +126,7 @@ export default function MenuPage() {
     setMsg("");
   }
 
-  async function saveForm(e: React.FormEvent) {
+  async function saveForm(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError("");

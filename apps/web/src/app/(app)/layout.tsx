@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 "use client";
 
 import { useEffect, useState } from "react";
@@ -7,7 +8,7 @@ import { api } from "@/lib/api";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+export default function AppLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);

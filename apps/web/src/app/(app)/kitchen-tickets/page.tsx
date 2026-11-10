@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, statusTone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 
 interface Line {
@@ -149,7 +149,7 @@ export default function KitchenTicketsPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <strong className="text-base">#{t.ticketNo}</strong>
                   <Badge tone="orange">{o?.orderType ?? "—"}</Badge>
-                  <Badge tone="neutral">{t.status}</Badge>
+                  <Badge tone={statusTone(t.status)}>{t.status}</Badge>
                 </div>
                 <div className="mt-1 text-xs text-ink-muted">
                   {o?.orderNo}

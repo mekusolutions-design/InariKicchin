@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {useEffect, useId, useMemo, useRef, useState, type KeyboardEvent} from "react";
 
 export type TypeaheadOption = {
   id: string;
@@ -78,7 +78,7 @@ export function TypeaheadCombobox({
     setOpen(false);
   }
 
-  function onKeyDown(e: React.KeyboardEvent) {
+  function onKeyDown(e: KeyboardEvent) {
     if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
       setOpen(true);
       return;
