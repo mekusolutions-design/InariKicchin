@@ -1,15 +1,9 @@
 /**
  * Typed client for the Inari Kicchin production API (Render / local).
- * API origin comes only from NEXT_PUBLIC_API_URL (set in Netlify / local env).
- * No hardcoded host fallbacks in source.
+ * API origin comes only from NEXT_PUBLIC_API_URL (Netlify env or local .env.local).
+ * No hardcoded host in source.
  */
-const raw = process.env.NEXT_PUBLIC_API_URL?.trim();
-if (!raw) {
-  throw new Error(
-    "NEXT_PUBLIC_API_URL is not set. Configure it in Netlify environment variables (or apps/web/.env.local for local dev).",
-  );
-}
-const API_URL = raw.replace(/\/$/, "");
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").trim().replace(/\/$/, "");
 
 export class ApiError extends Error {
   constructor(
@@ -21,6 +15,15 @@ export class ApiError extends Error {
   }
 }
 
+function requireApiUrl(): string {
+  if (!API_URL) {
+    throw new Error(
+      "NEXT_PUBLIC_API_URL is not set. Configure it in Netlify environment variables (or apps/web/.env.local for local dev).",
+    );
+  }
+  return API_URL;
+}
+
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("INARI_TOKEN");
@@ -30,6 +33,7 @@ export async function api<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const base = requireApiUrl();
   const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -37,7 +41,7 @@ export async function api<T = unknown>(
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const res = await fetch(`${base}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({} as Record<string, unknown>));
 
   if (res.status === 401 && typeof window !== "undefined") {
@@ -58,6 +62,11 @@ export async function api<T = unknown>(
 }
 
 export { API_URL };
+
+/** Resolve API base URL; throws if not configured (call at request time, not module load). */
+export function getApiUrl(): string {
+  return requireApiUrl();
+}
 
 export function money(n: number | undefined | null): string {
   return (

@@ -90,7 +90,7 @@ export default function InventoryReceivedPage() {
       setProducts(p);
       setSuppliers(s);
       try {
-        const h = await api<PurchaseRow[]>("/purchases").catch(() => []);
+        const h = await api<PurchaseRow[]>("/purchases").catch(() => [] as PurchaseRow[]);
         setHistory(Array.isArray(h) ? h.slice(0, 15) : []);
       } catch {
         setHistory([]);

@@ -69,7 +69,7 @@ export default function PosPage() {
   useEffect(() => {
     Promise.all([
       api<{ items: MenuItem[] }>("/menu"),
-      api<Meta>("/meta").catch(() => ({ orderTypes: [] as Meta["orderTypes"] })),
+      api<Meta>("/meta").catch((): Meta => ({ orderTypes: [] })),
       api<Record<string, string>>("/settings").catch(() => ({} as Record<string, string>)),
     ])
       .then(([menu, meta, s]) => {

@@ -1,0 +1,630 @@
+// Inari Kicchin — Blueprint §12 database structure (Phase 1 core + hooks for later phases)
+// Source of truth: Restaurant Management System Blueprint v1.0
+// Money DECIMAL(14,2); quantities DECIMAL(14,4); unit cost DECIMAL(14,4)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Users & security ───────────────────────────────────────────
+
+enum RoleName {
+  ADMINISTRATOR
+  MANAGER
+  CASHIER
+  KITCHEN_STAFF
+}
+
+model User {
+  id            String    @id @default(uuid())
+  full_name     String
+  email         String    @unique
+  phone         String?
+  password_hash String
+  role          RoleName
+  is_active     Boolean   @default(true)
+  last_login_at DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  audit_logs              AuditLog[]
+  purchases_created       Purchase[]              @relation("PurchaseCreator")
+  makeline_produced       MakelineProduction[]
+  closing_sessions        StockClosingSession[]
+  menu_price_changes      MenuItemPriceHistory[]
+  adjustments_created     StockAdjustment[]       @relation("AdjustmentCreator")
+  adjustments_approved    StockAdjustment[]       @relation("AdjustmentApprover")
+  wastage_recorded        WastageRecord[]
+  sessions                AuthSession[]
+  orders                  RestaurantOrder[]
+  kitchen_transitions     KitchenTicketTransition[]
+  stock_movements         StockMovement[]
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  user_id     String?
+  action      String
+  entity_type String
+  entity_id   String?
+  old_values  Json?
+  new_values  Json?
+  reason      String?
+  ip_address  String?
+  created_at  DateTime @default(now())
+
+  user User? @relation(fields: [user_id], references: [id])
+
+  @@index([entity_type, entity_id])
+  @@index([created_at])
+}
+
+model SystemSetting {
+  key        String   @id
+  value      String
+  updated_by String?
+  updated_at DateTime @updatedAt
+}
+
+// ─── Units & products ───────────────────────────────────────────
+
+enum UnitDimension {
+  WEIGHT
+  VOLUME
+  COUNT
+}
+
+model Unit {
+  id             String        @id @default(uuid())
+  code           String        @unique
+  name           String
+  dimension      UnitDimension
+  factor_to_base Decimal       @db.Decimal(18, 8)
+
+  products           Product[]
+  makeline_products  MakelineProduct[]
+  purchase_items     PurchaseItem[]
+  recipe_lines       RecipeLine[]
+}
+
+model ProductCategory {
+  id         String    @id @default(uuid())
+  name       String    @unique
+  sort_order Int       @default(0)
+  is_active  Boolean   @default(true)
+  products   Product[]
+}
+
+model Product {
+  id             String   @id @default(uuid())
+  name           String   @unique
+  category_id    String?
+  base_unit_id   String
+  min_stock_level Decimal @default(0) @db.Decimal(14, 4)
+  on_hand_qty    Decimal  @default(0) @db.Decimal(14, 4)
+  avg_unit_cost  Decimal  @default(0) @db.Decimal(14, 4)
+  is_active      Boolean  @default(true)
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  category          ProductCategory?    @relation(fields: [category_id], references: [id])
+  base_unit         Unit                @relation(fields: [base_unit_id], references: [id])
+  purchase_items    PurchaseItem[]
+  stock_adjustments StockAdjustment[]
+  wastage_records   WastageRecord[]
+  closing_items     StockClosingItem[]
+  stock_movements   StockMovement[]
+  recipe_inputs     RecipeLine[] @relation("RecipeProductInput")
+}
+
+model Supplier {
+  id             String     @id @default(uuid())
+  name           String
+  contact_person String?
+  phone          String?
+  email          String?
+  address        String?
+  kra_pin        String?
+  notes          String?
+  is_active      Boolean    @default(true)
+  created_at     DateTime   @default(now())
+  purchases      Purchase[]
+}
+
+// ─── Purchases (immutable headers/lines) ────────────────────────
+
+model Purchase {
+  id            String   @id @default(uuid())
+  purchase_no   String   @unique
+  supplier_id   String
+  invoice_no    String?
+  date_received DateTime
+  total_amount  Decimal  @default(0) @db.Decimal(14, 2)
+  notes         String?
+  created_by_id String?
+  created_at    DateTime @default(now())
+
+  supplier  Supplier       @relation(fields: [supplier_id], references: [id])
+  created_by User?         @relation("PurchaseCreator", fields: [created_by_id], references: [id])
+  items     PurchaseItem[]
+}
+
+model PurchaseItem {
+  id            String    @id @default(uuid())
+  purchase_id   String
+  product_id    String
+  quantity      Decimal   @db.Decimal(14, 4)
+  unit_id       String
+  quantity_base Decimal   @db.Decimal(14, 4)
+  total_price   Decimal   @db.Decimal(14, 2)
+  unit_price    Decimal   @db.Decimal(14, 4)
+  expiry_date   DateTime?
+  notes         String?
+
+  purchase Purchase @relation(fields: [purchase_id], references: [id])
+  product  Product  @relation(fields: [product_id], references: [id])
+  unit     Unit     @relation(fields: [unit_id], references: [id])
+  returns  SupplierReturn[]
+}
+
+model SupplierReturn {
+  id              String   @id @default(uuid())
+  purchase_item_id String
+  quantity_base   Decimal  @db.Decimal(14, 4)
+  credit_amount   Decimal  @db.Decimal(14, 2)
+  reason          String
+  returned_on     DateTime
+  created_by_id   String?
+  created_at      DateTime @default(now())
+
+  purchase_item PurchaseItem @relation(fields: [purchase_item_id], references: [id])
+}
+
+// ─── Adjustments & wastage ──────────────────────────────────────
+
+enum AdjustmentDirection {
+  IN
+  OUT
+}
+
+model StockAdjustment {
+  id                  String              @id @default(uuid())
+  product_id          String?
+  makeline_product_id String?
+  direction           AdjustmentDirection
+  quantity_base       Decimal             @db.Decimal(14, 4)
+  unit_cost           Decimal?            @db.Decimal(14, 4)
+  reason_code         String?
+  reason_text         String
+  status              String              @default("APPLIED")
+  created_by_id       String?
+  approved_by_id      String?
+  created_at          DateTime            @default(now())
+
+  product          Product?         @relation(fields: [product_id], references: [id])
+  makeline_product MakelineProduct? @relation(fields: [makeline_product_id], references: [id])
+  created_by       User?            @relation("AdjustmentCreator", fields: [created_by_id], references: [id])
+  approved_by      User?            @relation("AdjustmentApprover", fields: [approved_by_id], references: [id])
+}
+
+model WastageRecord {
+  id                  String   @id @default(uuid())
+  product_id          String?
+  makeline_product_id String?
+  quantity_base       Decimal  @db.Decimal(14, 4)
+  unit_cost_at_time   Decimal? @db.Decimal(14, 4)
+  reason_code         String
+  notes               String?
+  wasted_on           DateTime
+  employee_id         String?
+  recorded_by_id      String?
+  created_at          DateTime @default(now())
+
+  product          Product?         @relation(fields: [product_id], references: [id])
+  makeline_product MakelineProduct? @relation(fields: [makeline_product_id], references: [id])
+  recorded_by      User?            @relation(fields: [recorded_by_id], references: [id])
+}
+
+// ─── Makeline ───────────────────────────────────────────────────
+
+model MakelineProduct {
+  id            String   @id @default(uuid())
+  name          String   @unique
+  unit_id       String
+  min_level     Decimal  @default(0) @db.Decimal(14, 4)
+  on_hand_qty   Decimal  @default(0) @db.Decimal(14, 4)
+  is_active     Boolean  @default(true)
+
+  unit          Unit                 @relation(fields: [unit_id], references: [id])
+  productions   MakelineProduction[]
+  adjustments   StockAdjustment[]
+  wastage       WastageRecord[]
+  closing_items StockClosingItem[]
+  stock_movements StockMovement[]
+  recipe_outputs RecipeLine[] @relation("RecipeMakelineOutput")
+  recipe_inputs  RecipeLine[] @relation("RecipeMakelineInput")
+}
+
+model MakelineProduction {
+  id                  String   @id @default(uuid())
+  makeline_product_id String
+  quantity            Decimal  @db.Decimal(14, 4)
+  produced_at         DateTime
+  produced_by_id      String?
+  notes               String?
+  created_at          DateTime @default(now())
+
+  makeline_product MakelineProduct @relation(fields: [makeline_product_id], references: [id])
+  produced_by      User?           @relation(fields: [produced_by_id], references: [id])
+}
+
+// ─── Stock closing snapshots (immutable after submit) ───────────
+
+enum ClosingStatus {
+  DRAFT
+  SUBMITTED
+  SUPERSEDED
+}
+
+enum ClosingItemType {
+  PRODUCT
+  MAKELINE
+}
+
+model StockClosingSession {
+  id                 String        @id @default(uuid())
+  closing_no         String        @unique
+  period_start       DateTime
+  period_end         DateTime
+  status             ClosingStatus @default(DRAFT)
+  submitted_by_id    String?
+  submitted_at       DateTime?
+  total_value_used   Decimal       @default(0) @db.Decimal(14, 2)
+  total_value_wasted Decimal       @default(0) @db.Decimal(14, 2)
+  version            Int           @default(1)
+  supersedes_id      String?
+  correction_reason  String?
+  idempotency_key    String        @unique
+  created_at         DateTime      @default(now())
+
+  submitted_by User?               @relation(fields: [submitted_by_id], references: [id])
+  items        StockClosingItem[]
+  supersedes   StockClosingSession?  @relation("ClosingVersions", fields: [supersedes_id], references: [id])
+  superseded_by StockClosingSession[] @relation("ClosingVersions")
+}
+
+model StockClosingItem {
+  id                   String          @id @default(uuid())
+  session_id           String
+  item_type            ClosingItemType
+  product_id           String?
+  makeline_product_id  String?
+  name_snapshot        String
+  unit_snapshot        String
+  opening_qty          Decimal         @db.Decimal(14, 4)
+  received_qty         Decimal         @default(0) @db.Decimal(14, 4)
+  adj_in_qty           Decimal         @default(0) @db.Decimal(14, 4)
+  adj_out_qty          Decimal         @default(0) @db.Decimal(14, 4)
+  wastage_qty          Decimal         @default(0) @db.Decimal(14, 4)
+  available_qty        Decimal         @db.Decimal(14, 4)
+  closing_qty          Decimal         @db.Decimal(14, 4)
+  used_qty             Decimal         @db.Decimal(14, 4)
+  opening_value        Decimal?        @db.Decimal(14, 2)
+  received_value       Decimal?        @db.Decimal(14, 2)
+  avg_unit_cost        Decimal?        @db.Decimal(14, 4)
+  used_value           Decimal?        @db.Decimal(14, 2)
+  wastage_value        Decimal?        @db.Decimal(14, 2)
+  closing_value        Decimal?        @db.Decimal(14, 2)
+
+  session          StockClosingSession @relation(fields: [session_id], references: [id])
+  product          Product?            @relation(fields: [product_id], references: [id])
+  makeline_product MakelineProduct?    @relation(fields: [makeline_product_id], references: [id])
+
+  @@index([session_id])
+}
+
+// ─── Menu (Phase 1) ─────────────────────────────────────────────
+
+model MenuCategory {
+  id         String     @id @default(uuid())
+  name       String     @unique
+  sort_order Int        @default(0)
+  is_active  Boolean    @default(true)
+  items      MenuItem[]
+}
+
+model MenuItem {
+  id           String   @id @default(uuid())
+  item_code    String?  @unique
+  name         String
+  category_id  String
+  price        Decimal  @db.Decimal(14, 2)
+  description  String?
+  image_path   String?
+  is_available Boolean  @default(true)
+  is_active    Boolean  @default(true)
+  vat_class    String   @default("STANDARD") // STANDARD | EXEMPT | ZERO_RATED
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  category      MenuCategory          @relation(fields: [category_id], references: [id])
+  price_history MenuItemPriceHistory[]
+  orders        RestaurantOrderLine[]
+  recipe_outputs RecipeLine[] @relation("RecipeMenuOutput")
+}
+
+model MenuItemPriceHistory {
+  id           String   @id @default(uuid())
+  menu_item_id String
+  old_price    Decimal  @db.Decimal(14, 2)
+  new_price    Decimal  @db.Decimal(14, 2)
+  changed_by_id String?
+  changed_at   DateTime @default(now())
+  reason       String?
+
+  menu_item  MenuItem @relation(fields: [menu_item_id], references: [id])
+  changed_by User?    @relation(fields: [changed_by_id], references: [id])
+}
+
+// ─── Future hooks (Phase 2–4) — empty structures allowed ────────
+
+model VatSetting {
+  id                 String   @id @default(uuid())
+  vat_enabled        Boolean  @default(true)
+  rate_percent       Decimal  @db.Decimal(6, 3)
+  prices_include_vat Boolean  @default(true)
+  effective_from     DateTime
+  changed_by_id      String?
+  created_at         DateTime @default(now())
+}
+
+model OrderType {
+  id                 String  @id @default(uuid())
+  name               String  @unique
+  is_delivery        Boolean @default(false)
+  requires_reference Boolean @default(false)
+  is_active          Boolean @default(true)
+  sort_order         Int     @default(0)
+}
+
+model PaymentMethod {
+  id                 String  @id @default(uuid())
+  name               String  @unique
+  requires_reference Boolean @default(false)
+  is_active          Boolean @default(true)
+}
+
+/// Empty now; used Phase 4 for recipe-based deduction
+model RecipeLine {
+  id                    String   @id @default(uuid())
+  output_menu_item_id   String?
+  output_makeline_id    String?
+  input_product_id      String?
+  input_makeline_id     String?
+  quantity              Decimal  @db.Decimal(14, 4)
+  unit_id               String?
+
+  output_menu_item MenuItem?       @relation("RecipeMenuOutput", fields: [output_menu_item_id], references: [id])
+  output_makeline  MakelineProduct? @relation("RecipeMakelineOutput", fields: [output_makeline_id], references: [id])
+  input_product    Product?        @relation("RecipeProductInput", fields: [input_product_id], references: [id])
+  input_makeline   MakelineProduct? @relation("RecipeMakelineInput", fields: [input_makeline_id], references: [id])
+  unit             Unit?           @relation(fields: [unit_id], references: [id])
+
+  @@index([output_menu_item_id])
+  @@index([output_makeline_id])
+  @@index([input_product_id])
+  @@index([input_makeline_id])
+}
+
+
+// ─── Durable POS, payments, kitchen, sessions and stock ledger ─────────────
+
+enum RestaurantOrderStatus {
+  NEW
+  PREPARING
+  READY
+  SERVED
+  COLLECTED
+  CANCELLED
+}
+
+enum RestaurantPaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  REFUNDED
+}
+
+enum PaymentRecordStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum StockMovementType {
+  PURCHASE_RECEIPT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  WASTAGE
+  MAKELINE_PRODUCTION_IN
+  RECIPE_DEDUCTION
+  ORDER_VOID_REVERSAL
+  SUPPLIER_RETURN
+  OPENING_BALANCE
+}
+
+model RestaurantOrder {
+  id               String                  @id @default(uuid())
+  order_no         String                  @unique
+  order_type       String
+  status           RestaurantOrderStatus  @default(NEW)
+  payment_status   RestaurantPaymentStatus @default(UNPAID)
+  subtotal         Decimal                 @db.Decimal(14, 2)
+  vat_total        Decimal                 @db.Decimal(14, 2)
+  grand_total      Decimal                 @db.Decimal(14, 2)
+  vat_mode         String
+  vat_rate         Decimal                 @db.Decimal(6, 3)
+  cashier_id       String
+  table_no         String?
+  delivery_ref     String?
+  idempotency_key  String                  @unique
+  void_reason      String?
+  created_at       DateTime                @default(now())
+  updated_at       DateTime                @updatedAt
+  voided_at        DateTime?
+
+  cashier          User                    @relation(fields: [cashier_id], references: [id])
+  lines            RestaurantOrderLine[]
+  payments         PaymentRecord[]
+  kitchen_tickets  KitchenTicket[]
+  idempotency      IdempotencyRecord?
+
+  @@index([created_at])
+  @@index([status, created_at])
+  @@index([payment_status, created_at])
+}
+
+model RestaurantOrderLine {
+  id               String   @id @default(uuid())
+  order_id         String
+  menu_item_id     String?
+  name_snapshot    String
+  quantity         Decimal  @db.Decimal(14, 4)
+  unit_price       Decimal  @db.Decimal(14, 2)
+  line_total       Decimal  @db.Decimal(14, 2)
+  vat_amount       Decimal  @db.Decimal(14, 2)
+  vat_class        String
+  notes            String?
+
+  order      RestaurantOrder @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  menu_item  MenuItem?        @relation(fields: [menu_item_id], references: [id], onDelete: SetNull)
+
+  @@index([order_id])
+  @@index([menu_item_id])
+}
+
+model PaymentRecord {
+  id             String              @id @default(uuid())
+  order_id       String
+  method_name    String
+  amount         Decimal             @db.Decimal(14, 2)
+  reference      String?
+  status         PaymentRecordStatus @default(CONFIRMED)
+  recorded_at    DateTime            @default(now())
+  confirmed_at   DateTime?
+  metadata       Json?
+
+  order RestaurantOrder @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@index([order_id, recorded_at])
+  @@index([method_name, reference])
+}
+
+model KitchenTicket {
+  id            String                 @id @default(uuid())
+  order_id      String
+  ticket_no     String                 @unique
+  status        RestaurantOrderStatus @default(NEW)
+  print_count   Int                    @default(0)
+  created_at    DateTime               @default(now())
+  preparing_at  DateTime?
+  ready_at      DateTime?
+  served_at     DateTime?
+  transitions   KitchenTicketTransition[]
+
+  order RestaurantOrder @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@index([status, created_at])
+  @@index([order_id])
+}
+
+model KitchenTicketTransition {
+  id          String                 @id @default(uuid())
+  ticket_id   String
+  from_status RestaurantOrderStatus?
+  to_status   RestaurantOrderStatus
+  changed_by  String?
+  reason      String?
+  created_at  DateTime               @default(now())
+
+  ticket KitchenTicket @relation(fields: [ticket_id], references: [id], onDelete: Restrict)
+  actor  User?         @relation(fields: [changed_by], references: [id])
+
+  @@index([ticket_id, created_at])
+}
+
+model AuthSession {
+  id          String   @id @default(uuid())
+  user_id     String
+  token_hash  String   @unique
+  expires_at  DateTime
+  revoked_at  DateTime?
+  created_at  DateTime @default(now())
+  last_seen_at DateTime?
+  ip_address  String?
+  user_agent  String?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, expires_at])
+  @@index([expires_at, revoked_at])
+}
+
+model IdempotencyRecord {
+  id                String   @id @default(uuid())
+  scope             String
+  key               String
+  request_hash      String
+  response_status   Int?
+  response_body     Json?
+  order_id          String?  @unique
+  created_at        DateTime @default(now())
+  expires_at        DateTime?
+
+  order RestaurantOrder? @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@unique([scope, key])
+  @@index([expires_at])
+}
+
+model StockMovement {
+  id                  String            @id @default(uuid())
+  movement_type       StockMovementType
+  product_id          String?
+  makeline_product_id String?
+  quantity_delta      Decimal           @db.Decimal(14, 4)
+  unit_cost            Decimal?          @db.Decimal(14, 4)
+  value_delta          Decimal?          @db.Decimal(14, 2)
+  source_type          String
+  source_id            String
+  idempotency_key      String            @unique
+  actor_id             String?
+  notes                String?
+  created_at           DateTime          @default(now())
+
+  product          Product?         @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  makeline_product MakelineProduct? @relation(fields: [makeline_product_id], references: [id], onDelete: Restrict)
+  actor            User?            @relation(fields: [actor_id], references: [id])
+
+  @@index([product_id, created_at])
+  @@index([makeline_product_id, created_at])
+  @@index([source_type, source_id])
+}
+
+
+/// Shared login-failure counters; survives API restarts and scales across instances.
+model AuthLoginAttempt {
+  email        String   @id
+  failed_count Int      @default(0)
+  locked_until DateTime?
+  updated_at   DateTime @updatedAt
+
+  @@index([locked_until])
+}
