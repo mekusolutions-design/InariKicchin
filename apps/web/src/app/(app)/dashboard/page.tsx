@@ -31,13 +31,13 @@ export default function DashboardPage() {
   useEffect(() => {
     Promise.all([
       api<DashboardData>("/dashboard"),
-      api<Record<string, string>>("/settings").catch(() => ({})),
+      api<Record<string, string>>("/settings").catch(() => ({} as Record<string, string>)),
     ])
       .then(([d, s]) => {
         setData(d);
         setShowLowStock(s.module_low_stock_alerts !== "0");
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, []);
 
   if (error) {

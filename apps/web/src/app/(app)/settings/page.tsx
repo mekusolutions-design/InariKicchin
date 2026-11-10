@@ -38,7 +38,7 @@ export default function SettingsPage() {
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
-  const role = getStoredUser()?.role;
+  const [role, setRole] = useState<string | undefined>(undefined);
   const canWrite = role === "ADMINISTRATOR" || role === "MANAGER";
   const canUsers = role === "ADMINISTRATOR";
 
@@ -54,7 +54,7 @@ export default function SettingsPage() {
   async function load() {
     try {
       const [s, m, ot] = await Promise.all([
-        api<Record<string, string>>("/settings").catch(() => ({})),
+        api<Record<string, string>>("/settings").catch(() => ({} as Record<string, string>)),
         api<typeof meta>("/meta").catch(() => null),
         api<OrderTypeRow[]>("/order-types").catch(() => [] as OrderTypeRow[]),
       ]);
@@ -66,6 +66,10 @@ export default function SettingsPage() {
       setError(e instanceof Error ? e.message : "Failed to load");
     }
   }
+
+  useEffect(() => {
+    setRole(getStoredUser()?.role);
+  }, []);
 
   useEffect(() => {
     void load();

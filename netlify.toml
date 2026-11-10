@@ -1,11 +1,14 @@
+# Monorepo: Netlify base directory should be repo root with package path apps/web
+# (Site settings → Build → Base directory empty or ".", Package directory apps/web)
 [build]
-  base = "."
   command = "npm install --include=dev --workspace=@inari/web --include-workspace-root && npm run build -w @inari/web"
   publish = "apps/web/.next"
 
 [build.environment]
   NODE_VERSION = "22"
   NPM_CONFIG_PRODUCTION = "false"
+  SKIP_PRISMA_GENERATE = "1"
+  INARI_SKIP_PRISMA = "1"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

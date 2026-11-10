@@ -16,6 +16,6 @@
     "db:seed": "npm run db:seed -w @inari/api",
     "build": "npm run db:generate -w @inari/api",
     "start": "npm run start:prod -w @inari/api",
-    "postinstall": "npm run db:generate -w @inari/api || true"
+    "postinstall": "node scripts/postinstall.mjs || true"
   }
 }

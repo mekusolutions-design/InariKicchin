@@ -38,7 +38,7 @@ export async function api<T = unknown>(
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json().catch(() => ({} as Record<string, unknown>));
 
   if (res.status === 401 && typeof window !== "undefined") {
     localStorage.removeItem("INARI_TOKEN");

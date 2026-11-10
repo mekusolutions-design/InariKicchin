@@ -70,7 +70,7 @@ export default function PosPage() {
     Promise.all([
       api<{ items: MenuItem[] }>("/menu"),
       api<Meta>("/meta").catch(() => ({ orderTypes: [] as Meta["orderTypes"] })),
-      api<Record<string, string>>("/settings").catch(() => ({})),
+      api<Record<string, string>>("/settings").catch(() => ({} as Record<string, string>)),
     ])
       .then(([menu, meta, s]) => {
         const activeItems = (menu.items ?? []).filter((i) => i.isActive !== false);
@@ -104,7 +104,7 @@ export default function PosPage() {
           meta.vat?.pricesIncludeVat !== false && s.vat_inclusive !== "0",
         );
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, []);
 
   const moduleOn = (key: string, defaultOn = true) => {

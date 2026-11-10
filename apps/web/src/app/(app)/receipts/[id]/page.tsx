@@ -38,13 +38,13 @@ export default function ReceiptPage() {
     if (!id) return;
     Promise.all([
       api<Order>(`/orders/${id}`),
-      api<Record<string, string>>("/settings").catch(() => ({})),
+      api<Record<string, string>>("/settings").catch(() => ({} as Record<string, string>)),
     ])
       .then(([o, s]) => {
         setOrder(o);
         setSettings(s);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
   }, [id]);
 
   if (error) {

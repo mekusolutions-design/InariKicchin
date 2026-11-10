@@ -53,7 +53,7 @@ export default function MakelinePage() {
       const [data, prods, settings] = await Promise.all([
         api<MakelineProduct[] | { products?: MakelineProduct[] }>("/makeline"),
         api<PurchasedProduct[]>("/products").catch(() => [] as PurchasedProduct[]),
-        api<Record<string, string>>("/settings").catch(() => ({})),
+        api<Record<string, string>>("/settings").catch(() => ({} as Record<string, string>)),
       ]);
       const list = Array.isArray(data) ? data : (data.products ?? []);
       setProducts(list);

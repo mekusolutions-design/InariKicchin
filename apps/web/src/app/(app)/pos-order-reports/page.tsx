@@ -56,8 +56,13 @@ export default function PosOrderReportsPage() {
   const [voidPin, setVoidPin] = useState("");
   const [voidBusy, setVoidBusy] = useState(false);
   const [voidMsg, setVoidMsg] = useState("");
-  const role = typeof window !== "undefined" ? getStoredUser()?.role : undefined;
-  const canVoid = role === "ADMINISTRATOR" || role === "MANAGER" || role === "CASHIER";
+  const [role, setRole] = useState<string | undefined>(undefined);
+  const canVoid =
+    role === "ADMINISTRATOR" || role === "MANAGER" || role === "CASHIER";
+
+  useEffect(() => {
+    setRole(getStoredUser()?.role);
+  }, []);
 
 
   async function load(f = from, t = to) {
