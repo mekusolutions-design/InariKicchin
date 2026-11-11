@@ -57,6 +57,8 @@ describe('Phase 5 — Permissions', () => {
   it('kitchen cannot use POS', () => {
     assert.throws(() => assertPermission('KITCHEN_STAFF', 'pos:write'));
     assert.doesNotThrow(() => assertPermission('CASHIER', 'pos:write'));
+    assert.doesNotThrow(() => assertPermission('CASHIER', 'reports:read'));
+    assert.doesNotThrow(() => assertPermission('KITCHEN_STAFF', 'kitchen:read'));
   });
 
   it('admin has all permissions', () => {

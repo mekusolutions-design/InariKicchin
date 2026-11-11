@@ -2,6 +2,7 @@
  * Prisma POS / payment / kitchen repository. Schema-aligned field names.
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { getTransactionalPrismaClient } from '../database.ts';
 import { lineVat, type VatMode } from '../../domain/vat/calculations.ts';
 
 function d(n: number | string | Prisma.Decimal): Prisma.Decimal {
@@ -12,6 +13,15 @@ export class OrderRepository {
   private readonly prisma: PrismaClient;
   constructor(prisma: PrismaClient) {
     this.prisma = prisma;
+  }
+
+  /** Interactive transactions must use DIRECT_URL (non-pooler) on Supabase. */
+  private txClient(): PrismaClient {
+    try {
+      return getTransactionalPrismaClient();
+    } catch {
+      return this.prisma;
+    }
   }
 
   async createOrder(input: {
@@ -34,7 +44,7 @@ export class OrderRepository {
     }>;
     discountAmount?: number;
   }) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       const existing = await tx.idempotencyRecord.findUnique({
         where: { scope_key: { scope: 'pos_order', key: input.idempotencyKey } },
         include: {
@@ -213,7 +223,7 @@ export class OrderRepository {
       CANCELLED: [],
     };
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       const ticket = await tx.kitchenTicket.findUnique({
         where: { id: ticketId },
         include: { order: true },
@@ -281,7 +291,7 @@ export class OrderRepository {
   async voidOrder(orderId: string, reason: string, userId: string) {
     if (!reason?.trim()) throw new Error('Void reason is required');
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       const order = await tx.restaurantOrder.findUnique({
         where: { id: orderId },
         include: { payments: true, kitchen_tickets: true },

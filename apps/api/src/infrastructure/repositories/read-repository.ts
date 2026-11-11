@@ -247,22 +247,22 @@ export class ReadRepository {
       }
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const [key, value] of entries) {
-        await tx.systemSetting.upsert({
-          where: { key },
-          create: { key, value, updated_by: input.userId },
-          update: { value, updated_by: input.userId },
-        });
-      }
-      await tx.auditLog.create({
-        data: {
-          user_id: input.userId,
-          action: 'SETTINGS_UPDATED',
-          entity_type: 'system_setting',
-          new_values: input.settings,
-        },
+    // Sequential upserts — avoid interactive $transaction on PgBouncer pooler
+    // (Supabase :6543), which causes "Transaction not found / old closed transaction".
+    for (const [key, value] of entries) {
+      await this.prisma.systemSetting.upsert({
+        where: { key },
+        create: { key, value, updated_by: input.userId },
+        update: { value, updated_by: input.userId },
       });
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        user_id: input.userId,
+        action: 'SETTINGS_UPDATED',
+        entity_type: 'system_setting',
+        new_values: input.settings,
+      },
     });
 
     return this.getSettings();

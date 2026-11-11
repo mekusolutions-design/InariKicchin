@@ -3,6 +3,7 @@
  * Field names match schema.prisma exactly. Calculations use domain helpers.
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { getTransactionalPrismaClient } from '../database.ts';
 import { randomUUID } from 'node:crypto';
 import { unitPriceFromReceipt } from '../../domain/stock/calculations.ts';
 import { convertToBase } from '../../domain/stock/units.ts';
@@ -15,6 +16,15 @@ export class StockRepository {
   private readonly prisma: PrismaClient;
   constructor(prisma: PrismaClient) {
     this.prisma = prisma;
+  }
+
+  /** Interactive transactions must use DIRECT_URL (non-pooler) on Supabase. */
+  private txClient(): PrismaClient {
+    try {
+      return getTransactionalPrismaClient();
+    } catch {
+      return this.prisma;
+    }
   }
 
   async receiveStock(input: {
@@ -31,7 +41,7 @@ export class StockRepository {
       expiryDate?: string;
     }>;
   }) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       const supplier = await tx.supplier.findUnique({ where: { id: input.supplierId } });
       if (!supplier?.is_active) throw new Error('Supplier not found or inactive');
 
@@ -169,7 +179,7 @@ export class StockRepository {
     wastedOn: string;
     userId?: string;
   }) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       if (!!input.productId === !!input.makelineProductId) {
         throw new Error('Exactly one of productId or makelineProductId is required');
       }
@@ -269,7 +279,7 @@ export class StockRepository {
     /** When true (or settings module on), deduct recipe inputs from purchased stock */
     applyRecipeDeduction?: boolean;
   }) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       const mp = await tx.makelineProduct.findUnique({ where: { id: input.makelineProductId } });
       if (!mp?.is_active) throw new Error('Makeline product not found');
       if (input.quantity <= 0) throw new Error('Quantity must be positive');
@@ -378,7 +388,7 @@ export class StockRepository {
       assertClosingNotAboveAvailable,
     } = await import('../../domain/stock/calculations.ts');
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.txClient().$transaction(async (tx) => {
       const existing = await tx.idempotencyRecord.findUnique({
         where: { scope_key: { scope: 'closing', key: input.idempotencyKey } },
       });

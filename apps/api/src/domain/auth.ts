@@ -146,6 +146,8 @@ const PERMISSIONS: Record<Role, Set<string>> = {
     'kitchen:read',
     'menu:read',
     'products:read',
+    // POS Order Reports + receipt reprint (nav already exposes the page)
+    'reports:read',
   ]),
   KITCHEN_STAFF: new Set(['kitchen:read', 'kitchen:write', 'makeline:write', 'menu:read']),
 };
